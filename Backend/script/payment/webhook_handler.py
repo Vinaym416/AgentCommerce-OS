@@ -36,10 +36,13 @@ Commerce Application
 import hashlib
 import hmac
 import json
+import os
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from dotenv import load_dotenv
+
+load_dotenv()
 
 
 # ============================================================
@@ -82,11 +85,12 @@ class RazorpayWebhookHandler:
         self,
         webhook_secret: Optional[str] = None,
     ):
-
-        self.webhook_secret = webhook_secret
-
-        # Used for local duplicate-event detection.
-        self._processed_event_ids = set()
+        load_dotenv()
+        self.webhook_secret = (
+            webhook_secret
+            if webhook_secret is not None
+            else os.getenv("RAZORPAY_WEBHOOK_SECRET")
+        )
 
         print(
             "Razorpay Webhook Handler initialized."
@@ -290,35 +294,9 @@ class RazorpayWebhookHandler:
             )
 
         # ----------------------------------------------------
-        # DUPLICATE EVENT
+        # DUPLICATE EVENT HANDLING IS DEFERRED TO THE
+        # APPLICATION / MONGODB REPOSITORY LAYER.
         # ----------------------------------------------------
-
-        if event_id:
-
-            if event_id in self._processed_event_ids:
-
-                return WebhookResult(
-
-                    status="WEBHOOK_DUPLICATE",
-
-                    valid=True,
-
-                    event=event,
-
-                    event_id=event_id,
-
-                    razorpay_payment_id=None,
-
-                    razorpay_order_id=None,
-
-                    payment_status=None,
-
-                    reason="duplicate_webhook_event",
-                )
-
-            self._processed_event_ids.add(
-                event_id
-            )
 
         # ----------------------------------------------------
         # EXTRACT PAYMENT / ORDER ENTITY

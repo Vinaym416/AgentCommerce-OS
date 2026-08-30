@@ -143,8 +143,8 @@ def test_successful_payment():
     )
 
     check(
-        result["payment"]["status"] == "PAYMENT_SUCCESS",
-        "Payment succeeds"
+        result["payment"]["status"] == "PAYMENT_PENDING",
+        "Payment awaiting verification"
     )
 
     check(
@@ -153,30 +153,13 @@ def test_successful_payment():
     )
 
     check(
-        result["order"] is not None,
-        "Order result exists"
+        result["order"] is None,
+        "Order not created until payment verified"
     )
 
     check(
-        result["order"]["status"] == "ORDER_CREATED",
-        "Order created after successful payment"
-    )
-
-    check(
-        result["order"]["payment_transaction_id"]
-        == result["payment"]["transaction_id"],
-        "Order linked to payment transaction"
-    )
-
-    check(
-        result["order"]["amount"]
-        == result["payment"]["amount"],
-        "Order amount matches payment amount"
-    )
-
-    check(
-        result["final_action"] == "ORDER_CREATED",
-        "Final action is ORDER_CREATED"
+        result["final_action"] == "PAYMENT_PENDING",
+        "Final action is PAYMENT_PENDING awaiting verification"
     )
 
 
@@ -397,8 +380,8 @@ def test_zero_discount():
     )
 
     check(
-        result["order"]["amount"] == 784.23,
-        "Order uses final checkout price"
+        result["payment"]["status"] == "PAYMENT_PENDING",
+        "Payment pending verification"
     )
 
 
@@ -445,8 +428,8 @@ def test_discount_flow():
     )
 
     check(
-        result["order"]["amount"] == 800,
-        "Order uses discounted price"
+        result["payment"]["status"] == "PAYMENT_PENDING",
+        "Payment pending verification with discounted amount"
     )
 
 
@@ -531,26 +514,13 @@ def test_payment_order_link():
     )
 
     check(
-        order is not None,
-        "Order exists"
+        order is None,
+        "Order not created until verify_payment() is called"
     )
 
     check(
-        payment["transaction_id"]
-        == order["payment_transaction_id"],
-        "Payment transaction linked to order"
-    )
-
-    check(
-        payment["product_id"]
-        == order["product_id"],
-        "Payment product linked to order"
-    )
-
-    check(
-        payment["currency"]
-        == order["currency"],
-        "Payment currency linked to order"
+        payment["status"] == "PAYMENT_PENDING",
+        "Payment awaiting verification from frontend"
     )
 
 

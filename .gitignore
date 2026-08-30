@@ -3,6 +3,7 @@
 *__pycache__/
 *.venv
 *package-lock.json
+*.pytest_cache
 
 # Logs
 logs

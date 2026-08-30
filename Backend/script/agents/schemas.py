@@ -47,6 +47,12 @@ class ProductCandidate:
 
     rating: float = 0.0
 
+    product_name: str = ""
+
+    availability: str = "available"
+
+    currency: str = "INR"
+
 
 # ============================================================
 # MERCHANT DECISION

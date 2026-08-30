@@ -392,8 +392,8 @@ def test_full_execution():
     )
 
     check(
-        result["payment"]["status"] == "PAYMENT_SUCCESS",
-        "Payment succeeds"
+        result["payment"]["status"] == "PAYMENT_PENDING",
+        "Payment awaiting verification after execute_payment=True"
     )
 
     check(
@@ -402,36 +402,13 @@ def test_full_execution():
     )
 
     check(
-        result.get("order") is not None,
-        "Order result exists"
+        result.get("order") is None,
+        "Order not created until verify_payment() is called"
     )
 
     check(
-        result["order"]["status"] == "ORDER_CREATED",
-        "Order created after successful payment"
-    )
-
-    check(
-        result["order"]["payment_transaction_id"]
-        == result["payment"]["transaction_id"],
-        "Order linked to payment transaction"
-    )
-
-    check(
-        result["order"]["amount"]
-        == result["payment"]["amount"],
-        "Order amount matches payment amount"
-    )
-
-    check(
-        result["order"]["product_id"]
-        == result["payment"]["product_id"],
-        "Order product matches payment product"
-    )
-
-    check(
-        result["final_action"] == "ORDER_CREATED",
-        "Final action is ORDER_CREATED"
+        result.get("final_action") == "PAYMENT_PENDING",
+        "Final action is PAYMENT_PENDING"
     )
 
 

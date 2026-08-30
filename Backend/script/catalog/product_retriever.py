@@ -20,7 +20,7 @@ class ProductRetriever:
         budget=None,
         category=None,
         min_rating=None,
-        limit=5
+        limit=None
     ):
 
         products = self.repository.search(

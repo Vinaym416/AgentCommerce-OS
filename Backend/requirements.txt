@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+python-dotenv
+pymongo
+pandas
+numpy
+requests
+openai
+google-genai
+pytest

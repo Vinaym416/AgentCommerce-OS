@@ -29,10 +29,22 @@ if str(ROOT) not in sys.path:
     )
 
 
-from script.agents.payment_agent import (
+import warnings
+
+from script.tests.mocks.payment_agent import (
     PaymentAgent,
     PaymentResult,
 )
+
+
+def test_payment_agent_is_legacy_mock():
+    """The fake agent must be isolated to the mock/test boundary."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        from script.agents.payment_agent import PaymentAgent as LegacyPaymentAgent
+
+    assert LegacyPaymentAgent is PaymentAgent
+    assert any("legacy" in str(w.message).lower() for w in caught)
 
 
 # ============================================================

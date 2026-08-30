@@ -29,6 +29,7 @@ Therefore:
 
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 
 # ============================================================
@@ -54,8 +55,13 @@ from script.payment.razorpay_client import (
 )
 
 from script.payment.payment_verifier import (
-    PaymentVerificationResult
+    PaymentVerificationResult,
+    PaymentVerifier,
 )
+from script.payment.webhook_handler import RazorpayWebhookHandler
+from script.webhook.webhook_service import WebhookService
+from script.database.repositories.transaction_repository import TransactionRepository
+from script.database.repositories.order_repository import OrderRepository
 
 
 # ============================================================
@@ -345,11 +351,16 @@ def test_payment_verification_success():
     result = agent.verify_payment(
         customer_id=5176,
         product_id=453,
-        product_price=784.23,
-        discount_percent=10,
+        product_price=99999.99,
+        discount_percent=99,
         razorpay_order_id="order_TEST123",
         razorpay_payment_id="pay_TEST456",
         razorpay_signature="valid-signature",
+    )
+
+    check(
+        "CLIENT_PRICE_FIELDS_IGNORED" in result["agent_trace"],
+        "Client price fields are explicitly ignored during verification"
     )
 
     check(
@@ -461,6 +472,156 @@ def test_invalid_payment_signature():
         result["final_action"]
         == "PAYMENT_VERIFICATION_FAILED",
         "Final action is verification failure"
+    )
+
+
+# ============================================================
+# TEST 4B — DUPLICATE VERIFY IS IDEMPOTENT
+# ============================================================
+
+def test_duplicate_verify_is_idempotent():
+
+    print()
+    print("-" * 80)
+    print("TEST 4B — DUPLICATE VERIFY IS IDEMPOTENT")
+    print("-" * 80)
+
+    agent = CommerceExecutionAgent(
+        razorpay_client=FakeRazorpayClient(),
+        payment_verifier=FakePaymentVerifier(valid=True),
+    )
+
+    order_id = "order_DUPLICATE_VERIFY"
+    payment_id = "pay_DUPLICATE_VERIFY"
+    customer_id = 7777
+    product_id = 999
+    amount = 250.0
+
+    tx_repo = TransactionRepository()
+    tx_repo.upsert({
+        "transaction_id": "TRX-DUPLICATE-VERIFY",
+        "customer_id": customer_id,
+        "product_id": product_id,
+        "original_price": amount,
+        "negotiated_price": amount,
+        "final_price": amount,
+        "discount_percent": 0,
+        "currency": "INR",
+        "status": "PAYMENT_PENDING",
+        "payment_status": "PENDING",
+        "razorpay_order_id": order_id,
+        "checkout_ready": True,
+    })
+
+    first = agent.verify_payment(
+        customer_id=customer_id,
+        transaction_id="TRX-DUPLICATE-VERIFY",
+        product_id=product_id,
+        product_price=999999,
+        discount_percent=99,
+        razorpay_order_id=order_id,
+        razorpay_payment_id=payment_id,
+        razorpay_signature="valid-signature",
+    )
+
+    second = agent.verify_payment(
+        customer_id=customer_id,
+        transaction_id="TRX-DUPLICATE-VERIFY",
+        product_id=product_id,
+        product_price=999999,
+        discount_percent=99,
+        razorpay_order_id=order_id,
+        razorpay_payment_id=payment_id,
+        razorpay_signature="valid-signature",
+    )
+
+    order_repo = OrderRepository()
+    stored_orders = list(order_repo.collection.find({
+        "payment_transaction_id": payment_id
+    }, {"_id": 0}))
+
+    check(
+        first["final_action"] == "ORDER_CREATED",
+        "First verification creates the order"
+    )
+
+    check(
+        len(stored_orders) == 1,
+        "Only one internal order exists for the same payment"
+    )
+
+    check(
+        second["final_action"] == "ORDER_CREATED",
+        "Second verification stays idempotent"
+    )
+
+
+# ============================================================
+# TEST 4C — WEBHOOK BEFORE FRONTEND VERIFICATION
+# ============================================================
+
+def test_webhook_before_frontend_verification_is_idempotent():
+
+    print()
+    print("-" * 80)
+    print("TEST 4C — WEBHOOK BEFORE FRONTEND VERIFICATION")
+    print("-" * 80)
+
+    webhook_service = WebhookService()
+    tx_repo = TransactionRepository()
+    order_repo = OrderRepository()
+
+    transaction_id = "TRX-WEBHOOK-BEFORE-FRONTEND"
+    order_id = "order_WEBHOOK_BEFORE_VERIFY"
+    payment_id = "pay_WEBHOOK_BEFORE_VERIFY"
+    customer_id = 8888
+    product_id = 555
+    amount = 300.0
+
+    tx_repo.upsert({
+        "transaction_id": transaction_id,
+        "customer_id": customer_id,
+        "product_id": product_id,
+        "original_price": amount,
+        "negotiated_price": amount,
+        "final_price": amount,
+        "discount_percent": 0,
+        "currency": "INR",
+        "status": "PAYMENT_PENDING",
+        "payment_status": "PENDING",
+        "razorpay_order_id": order_id,
+        "checkout_ready": True,
+    })
+
+    first = webhook_service._create_order_for_payment(
+        razorpay_payment_id=payment_id,
+        razorpay_order_id=order_id,
+        event_id="evt_webhook_before_verify_1",
+    )
+
+    second = webhook_service._create_order_for_payment(
+        razorpay_payment_id=payment_id,
+        razorpay_order_id=order_id,
+        event_id="evt_webhook_before_verify_2",
+    )
+
+    stored_orders = list(order_repo.collection.find({
+        "payment_transaction_id": payment_id
+    }, {"_id": 0}))
+
+    check(
+        first["success"] is True,
+        "Webhook-created order succeeds on first pass"
+    )
+
+    check(
+        second["duplicate"] is True,
+        "Duplicate webhook order is suppressed"
+    )
+
+    check(
+        len(stored_orders) == 1,
+        "Only one internal order exists when webhook precedes frontend verification"
     )
 
 
@@ -659,6 +820,360 @@ def test_anonymous_customer():
     check(
         result["razorpay_order"] is not None,
         "Anonymous Razorpay order can be prepared"
+    )
+
+
+# ============================================================
+# TEST 9 — FAILURE MATRIX
+# ============================================================
+
+class FailingRazorpayClient:
+
+    def create_order(
+        self,
+        *,
+        amount,
+        currency="INR",
+        receipt=None,
+        notes=None,
+    ):
+
+        return type(
+            "FailedRazorpayOrder",
+            (),
+            {
+                "success": False,
+                "status": "RAZORPAY_ORDER_FAILED",
+                "razorpay_order_id": None,
+                "amount": amount,
+                "amount_in_paise": int(round(amount * 100)),
+                "currency": currency,
+                "receipt": receipt,
+                "razorpay_status": "failed",
+                "reason": "razorpay_order_creation_failed",
+            },
+        )()
+
+
+def test_failure_matrix():
+
+    print()
+    print("-" * 80)
+    print("TEST 9 — FAILURE MATRIX")
+    print("-" * 80)
+
+    # invalid signature
+    verifier = PaymentVerifier(key_secret="secret")
+    invalid = verifier.verify_payment_signature(
+        razorpay_order_id="order_123",
+        razorpay_payment_id="pay_123",
+        razorpay_signature="bad-signature",
+    )
+    check(
+        invalid.valid is False,
+        "Invalid payment signature is rejected"
+    )
+
+    # wrong Razorpay order ID
+    tx_repo = TransactionRepository()
+    tx_repo.upsert({
+        "transaction_id": "TRX-FAIL-ORDER-ID",
+        "customer_id": 2100,
+        "product_id": 10,
+        "original_price": 200.0,
+        "negotiated_price": 200.0,
+        "final_price": 200.0,
+        "discount_percent": 0,
+        "currency": "INR",
+        "status": "PAYMENT_PENDING",
+        "payment_status": "PENDING",
+        "razorpay_order_id": "order_OK",
+        "checkout_ready": True,
+    })
+    agent = CommerceExecutionAgent(
+        razorpay_client=FakeRazorpayClient(),
+        payment_verifier=FakePaymentVerifier(valid=True),
+    )
+    wrong_order = agent.verify_payment(
+        customer_id=2100,
+        transaction_id="TRX-FAIL-ORDER-ID",
+        product_id=10,
+        product_price=200,
+        discount_percent=0,
+        razorpay_order_id="order_WRONG",
+        razorpay_payment_id="pay_abc",
+        razorpay_signature="valid-signature",
+    )
+    check(
+        wrong_order["final_action"] == "PAYMENT_VERIFICATION_FAILED",
+        "Wrong Razorpay order ID is rejected"
+    )
+
+    # wrong payment ID / invalid signature
+    bad_payment = agent.verify_payment(
+        customer_id=2100,
+        transaction_id="TRX-FAIL-ORDER-ID",
+        product_id=10,
+        product_price=200,
+        discount_percent=0,
+        razorpay_order_id="order_OK",
+        razorpay_payment_id="pay_WRONG",
+        razorpay_signature="invalid-signature",
+    )
+    check(
+        bad_payment["payment_verification"]["valid"] is False,
+        "Wrong payment ID is rejected during verification"
+    )
+
+    # wrong amount is ignored and server uses persisted amount
+    tx_repo.upsert({
+        "transaction_id": "TRX-FAIL-AMOUNT",
+        "customer_id": 2101,
+        "product_id": 11,
+        "original_price": 500.0,
+        "negotiated_price": 500.0,
+        "final_price": 450.0,
+        "discount_percent": 10,
+        "currency": "INR",
+        "status": "PAYMENT_PENDING",
+        "payment_status": "PENDING",
+        "razorpay_order_id": "order_AMOUNT_OK",
+        "checkout_ready": True,
+    })
+    amount_result = agent.verify_payment(
+        customer_id=2101,
+        transaction_id="TRX-FAIL-AMOUNT",
+        product_id=11,
+        product_price=99999,
+        discount_percent=99,
+        razorpay_order_id="order_AMOUNT_OK",
+        razorpay_payment_id="pay_AMOUNT_OK",
+        razorpay_signature="valid-signature",
+    )
+    check(
+        amount_result["order"]["amount"] == 450.0,
+        "Server-authoritative amount wins over client price payload"
+    )
+
+    # transaction not found
+    missing_tx = agent.verify_payment(
+        customer_id=None,
+        transaction_id="TRX-NOT-FOUND",
+        product_id=11,
+        product_price=450,
+        discount_percent=10,
+        razorpay_order_id="order_MISSING",
+        razorpay_payment_id="pay_MISSING",
+        razorpay_signature="valid-signature",
+    )
+    check(
+        missing_tx["final_action"] == "EXECUTION_FAILED",
+        "Missing transaction is rejected"
+    )
+
+    # payment already processed
+    webhook_service = WebhookService()
+    order_repo = OrderRepository()
+    tx_repo.upsert({
+        "transaction_id": "TRX-PAYMENT-PROCESSED",
+        "customer_id": 2102,
+        "product_id": 12,
+        "original_price": 250.0,
+        "negotiated_price": 250.0,
+        "final_price": 250.0,
+        "discount_percent": 0,
+        "currency": "INR",
+        "status": "PAYMENT_PENDING",
+        "payment_status": "PENDING",
+        "razorpay_order_id": "order_PROCESSED",
+        "checkout_ready": True,
+    })
+    first_verify = agent.verify_payment(
+        customer_id=2102,
+        transaction_id="TRX-PAYMENT-PROCESSED",
+        product_id=12,
+        product_price=250,
+        discount_percent=0,
+        razorpay_order_id="order_PROCESSED",
+        razorpay_payment_id="pay_PROCESSED",
+        razorpay_signature="valid-signature",
+    )
+    second_verify = agent.verify_payment(
+        customer_id=2102,
+        transaction_id="TRX-PAYMENT-PROCESSED",
+        product_id=12,
+        product_price=250,
+        discount_percent=0,
+        razorpay_order_id="order_PROCESSED",
+        razorpay_payment_id="pay_PROCESSED",
+        razorpay_signature="valid-signature",
+    )
+    stored_same_payment = list(order_repo.collection.find({
+        "payment_transaction_id": "pay_PROCESSED"
+    }, {"_id": 0}))
+    check(
+        first_verify["final_action"] == "ORDER_CREATED",
+        "First verification creates the order"
+    )
+    check(
+        second_verify["final_action"] == "ORDER_CREATED",
+        "Second verification remains idempotent"
+    )
+    check(
+        len(stored_same_payment) == 1,
+        "Processed payment creates only one internal order"
+    )
+
+    # duplicate webhook
+    duplicate_payload = {
+        "event": "payment.captured",
+        "payload": {
+            "payment": {
+                "entity": {
+                    "id": "pay_DUPLICATE_WEBHOOK",
+                    "order_id": "order_DUPLICATE_WEBHOOK",
+                    "status": "captured",
+                }
+            }
+        }
+    }
+    duplicate_result_1 = webhook_service.process(
+        webhook_result=type(
+            "Result",
+            (),
+            {
+                "valid": True,
+                "status": "WEBHOOK_ACCEPTED",
+                "event": "payment.captured",
+                "event_id": "evt_duplicate_001",
+                "razorpay_payment_id": "pay_DUPLICATE_WEBHOOK",
+                "razorpay_order_id": "order_DUPLICATE_WEBHOOK",
+                "payment_status": "captured",
+                "reason": "webhook_verified_successfully",
+            },
+        )(),
+        raw_payload=duplicate_payload,
+    )
+    duplicate_result_2 = webhook_service.process(
+        webhook_result=type(
+            "Result",
+            (),
+            {
+                "valid": True,
+                "status": "WEBHOOK_ACCEPTED",
+                "event": "payment.captured",
+                "event_id": "evt_duplicate_001",
+                "razorpay_payment_id": "pay_DUPLICATE_WEBHOOK",
+                "razorpay_order_id": "order_DUPLICATE_WEBHOOK",
+                "payment_status": "captured",
+                "reason": "webhook_verified_successfully",
+            },
+        )(),
+        raw_payload=duplicate_payload,
+    )
+    check(
+        duplicate_result_1["status"] == "WEBHOOK_PROCESSED",
+        "First duplicate webhook is processed"
+    )
+    check(
+        duplicate_result_2["status"] == "WEBHOOK_DUPLICATE",
+        "Duplicate webhook is rejected without creating a second order"
+    )
+
+    # malformed webhook
+    malformed = RazorpayWebhookHandler().handle(
+        raw_body="{not-json",
+        signature="sig",
+        event_id="evt_malformed_001",
+    )
+    check(
+        malformed.status == "WEBHOOK_REJECTED",
+        "Malformed webhook is rejected"
+    )
+    check(
+        malformed.reason == "invalid_webhook_payload",
+        "Malformed payload reports the correct reason"
+    )
+
+    # invalid webhook signature
+    invalid_webhook = RazorpayWebhookHandler().handle(
+        raw_body='{"event":"payment.captured","payload":{"payment":{"entity":{"id":"pay_new","order_id":"order_new","status":"captured"}}}}',
+        signature='bad-signature',
+        event_id='evt_invalid_sig_001',
+    )
+    check(
+        invalid_webhook.valid is False,
+        "Invalid webhook signature is rejected"
+    )
+
+    # Razorpay order creation failure
+    failing_agent = CommerceExecutionAgent(
+        razorpay_client=FailingRazorpayClient(),
+        payment_verifier=FakePaymentVerifier(valid=True),
+    )
+    failed_order = failing_agent.execute(
+        customer_id=2200,
+        product_id=20,
+        product_price=100,
+        discount_percent=0,
+        payment_method="CARD",
+        execute_payment=True,
+    )
+    check(
+        failed_order["final_action"] == "RAZORPAY_ORDER_FAILED",
+        "Razorpay order creation failure is surfaced cleanly"
+    )
+
+    # MongoDB failure is handled without crashing
+    mongo_agent = CommerceExecutionAgent(
+        razorpay_client=FakeRazorpayClient(),
+        payment_verifier=FakePaymentVerifier(valid=True),
+    )
+    with patch.object(mongo_agent.order_repository, "create", side_effect=RuntimeError("mongo_down")):
+        mongo_result = mongo_agent.verify_payment(
+            customer_id=2201,
+            transaction_id="TRX-MONGO-FAIL",
+            product_id=21,
+            product_price=100,
+            discount_percent=0,
+            razorpay_order_id="order_MONGO_FAIL",
+            razorpay_payment_id="pay_MONGO_FAIL",
+            razorpay_signature="valid-signature",
+        )
+    check(
+        mongo_result["final_action"] == "ORDER_FAILED",
+        "MongoDB write failure does not crash verification"
+    )
+
+    # frontend closes payment window = no signature / no payment id
+    no_payment = agent.verify_payment(
+        customer_id=2100,
+        transaction_id="TRX-FAIL-ORDER-ID",
+        product_id=10,
+        product_price=200,
+        discount_percent=0,
+        razorpay_order_id="order_OK",
+        razorpay_payment_id="",
+        razorpay_signature="",
+    )
+    check(
+        no_payment["payment_verification"]["valid"] is False,
+        "Payment cancellation / closed window is rejected cleanly"
+    )
+
+    # payment failure path
+    failed_payment = agent.execute(
+        customer_id=2300,
+        product_id=30,
+        product_price=100,
+        discount_percent=0,
+        payment_method="CARD",
+        execute_payment=True,
+        simulate_failure=True,
+    )
+    check(
+        failed_payment["final_action"] == "PAYMENT_FAILED",
+        "Explicit payment failure is surfaced"
     )
 
 

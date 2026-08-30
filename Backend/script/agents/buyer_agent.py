@@ -89,6 +89,16 @@ Rules:
                 "20%",
                 "50%",
                 "give me",
+                "negotiate",
+                "better price",
+                "cheaper",
+                "lower price",
+                "do better",
+                "can you do better",
+                "best price",
+                "save money",
+                "price reduction",
+                "deal",
             ]
         )
 

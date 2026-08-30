@@ -15,7 +15,7 @@ class ProductRepository:
         budget: Optional[float] = None,
         category: Optional[Any] = None,
         min_rating: Optional[float] = None,
-        limit: int = 5,
+        limit: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         query: Dict[str, Any] = {}
 
@@ -31,15 +31,18 @@ class ProductRepository:
         if min_rating is not None:
             query["avg_rating"] = {"$gte": float(min_rating)}
 
-        return list(
-            self.collection.find(query, {"_id": 0}).sort(
-                [
-                    ("product_score", -1),
-                    ("conversion_rate", -1),
-                    ("quality_score", -1),
-                ]
-            ).limit(limit)
+        cursor = self.collection.find(query, {"_id": 0}).sort(
+            [
+                ("product_score", -1),
+                ("conversion_rate", -1),
+                ("quality_score", -1),
+            ]
         )
+
+        if limit is not None:
+            cursor = cursor.limit(limit)
+
+        return list(cursor)
 
     def get_by_product_id(self, product_id: int) -> Optional[Dict[str, Any]]:
         return self.collection.find_one(

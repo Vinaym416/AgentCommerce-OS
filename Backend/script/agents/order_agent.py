@@ -51,6 +51,10 @@ class OrderResult:
 
     payment_transaction_id: Optional[str]
 
+    payment_status: str
+
+    payment_provider: str
+
     created_at: str
 
     reason: str
@@ -94,6 +98,8 @@ class OrderAgent:
                 amount=amount,
                 currency=currency,
                 payment_transaction_id=payment_transaction_id,
+                payment_status=payment_status,
+                payment_provider="RAZORPAY",
                 reason="order_requires_successful_payment",
             )
 
@@ -109,6 +115,8 @@ class OrderAgent:
                 amount=amount,
                 currency=currency,
                 payment_transaction_id=None,
+                payment_status=payment_status,
+                payment_provider="RAZORPAY",
                 reason="payment_transaction_id_required",
             )
 
@@ -124,6 +132,8 @@ class OrderAgent:
                 amount=amount,
                 currency=currency,
                 payment_transaction_id=payment_transaction_id,
+                payment_status=payment_status,
+                payment_provider="RAZORPAY",
                 reason="customer_id_required",
             )
 
@@ -139,6 +149,8 @@ class OrderAgent:
                 amount=amount,
                 currency=currency,
                 payment_transaction_id=payment_transaction_id,
+                payment_status=payment_status,
+                payment_provider="RAZORPAY",
                 reason="product_id_required",
             )
 
@@ -157,6 +169,8 @@ class OrderAgent:
                 amount=0.0,
                 currency=currency,
                 payment_transaction_id=payment_transaction_id,
+                payment_status=payment_status,
+                payment_provider="RAZORPAY",
                 reason="invalid_order_amount",
             )
 
@@ -168,6 +182,8 @@ class OrderAgent:
                 amount=amount,
                 currency=currency,
                 payment_transaction_id=payment_transaction_id,
+                payment_status=payment_status,
+                payment_provider="RAZORPAY",
                 reason="order_amount_must_be_positive",
             )
 
@@ -183,6 +199,8 @@ class OrderAgent:
                 amount=amount,
                 currency=currency,
                 payment_transaction_id=payment_transaction_id,
+                payment_status=payment_status,
+                payment_provider="RAZORPAY",
                 reason="currency_required",
             )
 
@@ -203,7 +221,7 @@ class OrderAgent:
 
         return OrderResult(
 
-            status="ORDER_CREATED",
+            status="CONFIRMED",
 
             order_id=order_id,
 
@@ -221,6 +239,10 @@ class OrderAgent:
             payment_transaction_id=(
                 payment_transaction_id
             ),
+
+            payment_status="SUCCESS",
+
+            payment_provider="RAZORPAY",
 
             created_at=self._timestamp(),
 
@@ -241,6 +263,8 @@ class OrderAgent:
         amount,
         currency,
         payment_transaction_id,
+        payment_status,
+        payment_provider,
         reason,
     ) -> OrderResult:
 
@@ -270,6 +294,10 @@ class OrderAgent:
             payment_transaction_id=(
                 payment_transaction_id
             ),
+
+            payment_status=payment_status,
+
+            payment_provider=payment_provider,
 
             created_at=self._timestamp(),
 

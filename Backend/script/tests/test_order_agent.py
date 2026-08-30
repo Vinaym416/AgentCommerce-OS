@@ -169,6 +169,21 @@ def test_successful_order():
         == "order_created_after_successful_payment",
     )
 
+    check(
+        "Payment status is explicit",
+        result.payment_status == "SUCCESS",
+    )
+
+    check(
+        "Payment provider is Razorpay",
+        result.payment_provider == "RAZORPAY",
+    )
+
+    check(
+        "Confirmed order status is recorded",
+        result.status == "CONFIRMED",
+    )
+
 
 # ============================================================
 # 2. FAILED PAYMENT

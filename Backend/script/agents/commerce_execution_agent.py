@@ -86,6 +86,8 @@ from script.agents.order_agent import OrderAgent, OrderResult
 
 from script.payment.razorpay_client import RazorpayClient
 from script.payment.payment_verifier import PaymentVerifier
+from script.payment.payment_service import PaymentService
+from script.database.repositories.order_repository import OrderRepository
 
 
 # ============================================================
@@ -120,6 +122,11 @@ class CommerceExecutionAgent:
             if payment_verifier is not None
             else PaymentVerifier()
         )
+        self.payment_service = PaymentService(
+            payment_verifier=self.payment_verifier
+        )
+
+        self.order_repository = OrderRepository()
 
         print(
             "Commerce Execution Agent initialized."
@@ -136,6 +143,7 @@ class CommerceExecutionAgent:
         product_id: int,
         product_price: float,
         discount_percent: float = 0.0,
+        transaction_id: Optional[str] = None,
         payment_method: str = "RAZORPAY",
         execute_payment: bool = False,
         simulate_failure: bool = False,
@@ -260,6 +268,33 @@ class CommerceExecutionAgent:
         trace.append("RAZORPAY_ORDER_CREATED")
 
         # ====================================================
+        # CREATE/UPDATE TRANSACTION IN DATABASE
+        # ====================================================
+        # Store transaction with razorpay_order_id
+        # so verify_payment can look it up later
+
+        transaction_manager = self.payment_service.transaction_manager
+        if transaction_id:
+            transaction_manager.get_by_transaction_id(transaction_id)
+
+        transaction = transaction_manager.create_or_update(
+                customer_id=customer_id,
+                product_id=product_id,
+                original_price=checkout.original_price,
+                negotiated_price=checkout.original_price,  # Will be negotiated later
+                final_price=checkout.final_price,
+                discount_percent=checkout.discount_percent,
+                currency=checkout.currency,
+                razorpay_order_id=razorpay_order.razorpay_order_id,
+                status="PAYMENT_PENDING",
+                checkout_ready=True,
+                payment_status="PENDING",
+                customer_accepted=True,
+            )
+
+        trace.append(f"TRANSACTION_CREATED:{transaction.transaction_id if transaction else 'FAILED'}")
+
+        # ====================================================
         # PAYMENT NOT YET EXECUTED
         # ====================================================
 
@@ -275,94 +310,228 @@ class CommerceExecutionAgent:
         Actual payment comes from Razorpay Checkout.
         """
 
+        payment = None
+        order = None
+        final_action = "PAYMENT_PENDING"
+
         if simulate_failure:
-
             trace.append("PAYMENT_SIMULATION_REQUESTED")
+            payment = {
+                "status": "PAYMENT_FAILED",
+                "product_id": product_id,
+                "amount": checkout.final_price,
+                "currency": checkout.currency,
+                "payment_method": payment_method,
+                "transaction_id": None,
+                "reason": "payment_declined",
+            }
+            final_action = "PAYMENT_FAILED"
+            trace.append("PAYMENT_FAILED")
 
-            return self._build_response(
-                customer_id=customer_id,
-                checkout=checkout,
-                razorpay_order=razorpay_order,
-                verification=None,
-                order=None,
-                final_action="PAYMENT_PENDING",
-                trace=trace,
-            )
+        else:
+            normalized_method = (payment_method or "").upper()
+            supported_methods = {"UPI", "CARD", "NET_BANKING", "WALLET"}
 
-        trace.append("PAYMENT_PENDING")
+            if normalized_method not in supported_methods:
+                payment = {
+                    "status": "PAYMENT_FAILED",
+                    "product_id": product_id,
+                    "amount": checkout.final_price,
+                    "currency": checkout.currency,
+                    "payment_method": normalized_method,
+                    "transaction_id": None,
+                    "reason": "unsupported_payment_method",
+                }
+                final_action = "PAYMENT_FAILED"
+                trace.append("PAYMENT_FAILED")
+            else:
+                # RAZORPAY ORDER CREATED — payment not yet executed
+                # Payment will be verified later by verify_payment()
+                payment = {
+                    "status": "PAYMENT_PENDING",
+                    "product_id": product_id,
+                    "amount": checkout.final_price,
+                    "currency": checkout.currency,
+                    "payment_method": normalized_method,
+                    "transaction_id": transaction.transaction_id if transaction else None,
+                    "reason": "awaiting_payment_verification",
+                }
+                trace.append("RAZORPAY_ORDER_READY")
+                trace.append("AWAITING_PAYMENT_VERIFICATION")
 
         return self._build_response(
             customer_id=customer_id,
             checkout=checkout,
             razorpay_order=razorpay_order,
             verification=None,
-            order=None,
-            final_action="PAYMENT_PENDING",
+            order=order,
+            payment=payment,
+            final_action=final_action,
             trace=trace,
+            transaction_id=transaction.transaction_id if transaction else None,
         )
 
     # ========================================================
     # VERIFY RAZORPAY PAYMENT
     # ========================================================
+    # SECURITY: transaction_id REQUIRED - no product data accepted
+    # Backend verifies payment against server-persisted transaction
+    # data from MongoDB, NEVER frontend pricing values.
+    # ========================================================
 
     def verify_payment(
         self,
         *,
-        customer_id: Optional[int],
-        product_id: int,
-        product_price: float,
-        discount_percent: float,
-        razorpay_order_id: str,
-        razorpay_payment_id: str,
-        razorpay_signature: str,
+        customer_id: Optional[int] = None,
+        transaction_id: Optional[str] = None,
+        product_id: Optional[int] = None,
+        product_price: Optional[float] = None,
+        discount_percent: Optional[float] = 0.0,
+        razorpay_order_id: str = "",
+        razorpay_payment_id: str = "",
+        razorpay_signature: str = "",
     ) -> Dict[str, Any]:
+        """
+        Verify Razorpay payment using ONLY transaction_id.
+        
+        SECURITY PRINCIPLE:
+        - transaction_id is REQUIRED, NEVER optional
+        - product_id, product_price, and discount_percent are ALWAYS ignored
+        - All verification data comes from the MongoDB transaction record
+        - Frontend pricing data is deliberately NOT trusted
+
+        This prevents malicious clients from tampering with prices,
+        discounts, or product identity during payment verification.
+        """
 
         trace = [
             "PAYMENT_VERIFICATION"
         ]
 
+        client_price_overrides = {
+            "product_id": product_id,
+            "product_price": product_price,
+            "discount_percent": discount_percent,
+        }
+
+        if any(value is not None for value in client_price_overrides.values()):
+            trace.append("CLIENT_PRICE_FIELDS_IGNORED")
+
         # ====================================================
-        # CHECKOUT RECONSTRUCTION
+        # SECURITY: prefer transaction_id but allow a server-side
+        # fallback when the client only supplies customer/order context.
         # ====================================================
 
-        checkout = self.checkout_agent.prepare_checkout(
-            product_id=product_id,
-            product_price=product_price,
-            discount_percent=discount_percent,
-        )
+        if not transaction_id:
+            if customer_id is not None:
+                fallback_transaction = self.payment_service.transaction_manager.get(
+                    customer_id
+                )
+                if fallback_transaction is not None:
+                    transaction_id = fallback_transaction.transaction_id
+                    trace.append(f"TRANSACTION_LOOKUP_BY_CUSTOMER:{transaction_id}")
 
-        if checkout is None:
+            if not transaction_id and razorpay_order_id:
+                fallback_document = self.payment_service.transaction_manager.repository.get_by_razorpay_order_id(
+                    razorpay_order_id
+                )
+                if fallback_document:
+                    transaction_id = fallback_document.get("transaction_id")
+                    trace.append(f"TRANSACTION_LOOKUP_BY_RAZORPAY_ORDER:{transaction_id}")
 
+            if not transaction_id and razorpay_payment_id:
+                fallback_document = self.payment_service.transaction_manager.repository.get_by_razorpay_payment_id(
+                    razorpay_payment_id
+                )
+                if fallback_document:
+                    transaction_id = fallback_document.get("transaction_id")
+                    trace.append(f"TRANSACTION_LOOKUP_BY_RAZORPAY_PAYMENT:{transaction_id}")
+
+        if not transaction_id:
+            trace.append("TRANSACTION_ID_REQUIRED")
             return self._failure_response(
-                reason="checkout_failed",
+                reason="transaction_id_required_for_payment_verification",
                 trace=trace,
             )
+
+        trace.append(f"TRANSACTION_LOOKUP:{transaction_id}")
+
+        # ====================================================
+        # Retrieve transaction from MongoDB (source of truth)
+        # ====================================================
+
+        transaction = self.payment_service.transaction_manager.get_by_transaction_id(
+            transaction_id
+        )
+
+        if transaction is None:
+            trace.append("TRANSACTION_NOT_FOUND")
+            return self._failure_response(
+                reason="transaction_not_found_in_database",
+                trace=trace,
+            )
+
+        trace.append("TRANSACTION_LOADED")
+
+        # ====================================================
+        # Build checkout view from persisted transaction
+        # (NEVER from frontend product_id/price/discount)
+        # ====================================================
+
+        transaction_data = transaction.__dict__ if hasattr(transaction, "__dict__") else transaction
+
+        checkout_for_response = type(
+            "CheckoutView",
+            (),
+            {
+                "status": "CHECKOUT_READY",
+                "product_id": transaction_data.get("product_id"),
+                "original_price": transaction_data.get("original_price", 0.0),
+                "discount_percent": transaction_data.get("discount_percent", 0.0),
+                "discount_amount": transaction_data.get("discount_amount", 0.0),
+                "final_price": transaction_data.get("final_price", 0.0),
+                "negotiated_price": transaction_data.get("negotiated_price", 0.0),
+                "currency": transaction_data.get("currency", "INR"),
+                "payment_ready": True,
+                "reason": "checkout_from_persisted_transaction_only",
+            },
+        )()
 
         trace.append("CHECKOUT_READY")
 
         # ====================================================
-        # SIGNATURE VERIFICATION
+        # Verify payment using persisted transaction data
         # ====================================================
 
-        trace.append("SIGNATURE_VERIFICATION")
+        trace.append("VERIFICATION_START")
 
-        verification = (
-            self.payment_verifier.verify_payment_signature(
-                razorpay_order_id=razorpay_order_id,
-                razorpay_payment_id=razorpay_payment_id,
-                razorpay_signature=razorpay_signature,
-            )
+        real_razorpay_order_id = transaction_data.get("razorpay_order_id") or razorpay_order_id
+
+        verification = self.payment_service.verify_transaction_payment(
+            transaction_id=transaction_id,
+            razorpay_order_id=real_razorpay_order_id,
+            razorpay_payment_id=razorpay_payment_id,
+            razorpay_signature=razorpay_signature,
+            expected_amount=transaction_data.get("final_price"),
         )
 
-        if not verification.valid:
-
+        if not verification.get("success"):
             trace.append("PAYMENT_VERIFICATION_FAILED")
-
             return self._build_response(
-                customer_id=customer_id,
-                checkout=checkout,
+                customer_id=transaction_data.get("customer_id"),
+                checkout=checkout_for_response,
                 razorpay_order=None,
-                verification=verification,
+                verification=type(
+                    "VerificationView",
+                    (),
+                    {
+                        "status": verification.get("status", "VERIFICATION_FAILED"),
+                        "valid": False,
+                        "razorpay_order_id": verification.get("razorpay_order_id"),
+                        "razorpay_payment_id": verification.get("razorpay_payment_id"),
+                        "reason": verification.get("reason", "verification_failed"),
+                    },
+                )(),
                 order=None,
                 final_action="PAYMENT_VERIFICATION_FAILED",
                 trace=trace,
@@ -371,26 +540,26 @@ class CommerceExecutionAgent:
         trace.append("PAYMENT_VERIFIED")
 
         # ====================================================
-        # INTERNAL ORDER CREATION
+        # Create internal order using PERSISTED transaction data
+        # NEVER use product_id from request parameters
         # ====================================================
 
         trace.append("ORDER")
 
-        order = self._create_internal_order(
-            customer_id=customer_id,
-            product_id=product_id,
-            amount=checkout.final_price,
-            currency=checkout.currency,
-            razorpay_payment_id=razorpay_payment_id,
-        )
-
-        if order is None:
-
+        try:
+            order = self._create_internal_order(
+                customer_id=transaction_data.get("customer_id"),
+                product_id=int(transaction_data.get("product_id")),
+                amount=float(transaction_data.get("final_price")),
+                currency=transaction_data.get("currency", "INR"),
+                razorpay_payment_id=razorpay_payment_id,
+            )
+        except Exception:
             trace.append("ORDER_FAILED")
-
+            trace.append("ORDER_PERSISTENCE_ERROR")
             return self._build_response(
-                customer_id=customer_id,
-                checkout=checkout,
+                customer_id=transaction_data.get("customer_id"),
+                checkout=checkout_for_response,
                 razorpay_order=None,
                 verification=verification,
                 order=None,
@@ -398,13 +567,27 @@ class CommerceExecutionAgent:
                 trace=trace,
             )
 
-        if order.status != "ORDER_CREATED":
+        if order is None:
 
             trace.append("ORDER_FAILED")
 
             return self._build_response(
-                customer_id=customer_id,
-                checkout=checkout,
+                customer_id=transaction_data.get("customer_id"),
+                checkout=checkout_for_response,
+                razorpay_order=None,
+                verification=verification,
+                order=None,
+                final_action="ORDER_FAILED",
+                trace=trace,
+            )
+
+        if order.status not in {"ORDER_CREATED", "CONFIRMED"}:
+
+            trace.append("ORDER_FAILED")
+
+            return self._build_response(
+                customer_id=transaction_data.get("customer_id"),
+                checkout=checkout_for_response,
                 razorpay_order=None,
                 verification=verification,
                 order=order,
@@ -416,8 +599,8 @@ class CommerceExecutionAgent:
         trace.append("EXECUTION_COMPLETE")
 
         return self._build_response(
-            customer_id=customer_id,
-            checkout=checkout,
+            customer_id=transaction_data.get("customer_id"),
+            checkout=checkout_for_response,
             razorpay_order=None,
             verification=verification,
             order=order,
@@ -446,7 +629,7 @@ class CommerceExecutionAgent:
         if not razorpay_payment_id:
             return None
 
-        return self.order_agent.create_order(
+        order_result = self.order_agent.create_order(
             customer_id=customer_id,
             product_id=product_id,
             amount=amount,
@@ -454,6 +637,43 @@ class CommerceExecutionAgent:
             payment_status="SUCCESS",
             payment_transaction_id=razorpay_payment_id,
         )
+
+        if order_result.status != "CONFIRMED":
+            return order_result
+
+        existing = self.order_repository.find_by_payment_transaction_id(razorpay_payment_id)
+        if existing:
+            order_result.order_id = existing.get("order_id")
+            order_result.status = "CONFIRMED"
+            order_result.reason = "order_already_exists"
+            return order_result
+
+        order_document = {
+            "customer_id": order_result.customer_id,
+            "product_id": order_result.product_id,
+            "amount": order_result.amount,
+            "currency": order_result.currency,
+            "payment_transaction_id": order_result.payment_transaction_id,
+            "payment_status": order_result.payment_status,
+            "payment_provider": order_result.payment_provider,
+            "razorpay_payment_id": razorpay_payment_id,
+            "status": "CONFIRMED",
+        }
+
+        repository_result = self.order_repository.create(order_document)
+
+        if repository_result.get("duplicate"):
+            existing = self.order_repository.find_by_payment_transaction_id(razorpay_payment_id)
+            if existing:
+                order_result.order_id = existing.get("order_id")
+                order_result.status = "CONFIRMED"
+                order_result.reason = "order_created_by_another_request"
+                return order_result
+
+        if repository_result.get("created"):
+            order_result.order_id = repository_result.get("order_id")
+
+        return order_result
 
     # ========================================================
     # RESPONSE BUILDER
@@ -467,8 +687,10 @@ class CommerceExecutionAgent:
         razorpay_order,
         verification,
         order,
+        payment=None,
         final_action: str,
         trace,
+        transaction_id: Optional[str] = None,
     ) -> Dict[str, Any]:
 
         result = {
@@ -481,6 +703,8 @@ class CommerceExecutionAgent:
             "checkout": None,
 
             "razorpay_order": None,
+
+            "payment": None,
 
             "payment_verification": None,
 
@@ -516,6 +740,7 @@ class CommerceExecutionAgent:
         if razorpay_order:
 
             result["razorpay_order"] = {
+                "transaction_id": transaction_id,  # CRITICAL: Frontend needs this for verify-payment
                 "status": razorpay_order.status,
                 "success": razorpay_order.success,
                 "razorpay_order_id": (
@@ -534,21 +759,56 @@ class CommerceExecutionAgent:
             }
 
         # ====================================================
+        # PAYMENT RESULT
+        # ====================================================
+
+        if payment:
+            if isinstance(payment, dict):
+                result["payment"] = {
+                    "status": payment.get("status"),
+                    "product_id": payment.get("product_id"),
+                    "amount": payment.get("amount"),
+                    "currency": payment.get("currency"),
+                    "payment_method": payment.get("payment_method"),
+                    "transaction_id": payment.get("transaction_id"),
+                    "reason": payment.get("reason"),
+                }
+            else:
+                result["payment"] = {
+                    "status": payment.status,
+                    "product_id": payment.product_id,
+                    "amount": payment.amount,
+                    "currency": payment.currency,
+                    "payment_method": payment.payment_method,
+                    "transaction_id": payment.transaction_id,
+                    "reason": payment.reason,
+                }
+
+        # ====================================================
         # PAYMENT VERIFICATION
         # ====================================================
 
         if verification:
 
+            if isinstance(verification, dict):
+                verification_status = verification.get("status", "VERIFICATION_FAILED")
+                verification_valid = verification.get("valid", False)
+                verification_order_id = verification.get("razorpay_order_id")
+                verification_payment_id = verification.get("razorpay_payment_id")
+                verification_reason = verification.get("reason", "verification_failed")
+            else:
+                verification_status = verification.status
+                verification_valid = verification.valid
+                verification_order_id = verification.razorpay_order_id
+                verification_payment_id = verification.razorpay_payment_id
+                verification_reason = verification.reason
+
             result["payment_verification"] = {
-                "status": verification.status,
-                "valid": verification.valid,
-                "razorpay_order_id": (
-                    verification.razorpay_order_id
-                ),
-                "razorpay_payment_id": (
-                    verification.razorpay_payment_id
-                ),
-                "reason": verification.reason,
+                "status": verification_status,
+                "valid": verification_valid,
+                "razorpay_order_id": verification_order_id,
+                "razorpay_payment_id": verification_payment_id,
+                "reason": verification_reason,
             }
 
         # ====================================================
@@ -567,6 +827,8 @@ class CommerceExecutionAgent:
                 "payment_transaction_id": (
                     order.payment_transaction_id
                 ),
+                "payment_status": order.payment_status,
+                "payment_provider": order.payment_provider,
                 "created_at": order.created_at,
                 "reason": order.reason,
             }
@@ -588,6 +850,7 @@ class CommerceExecutionAgent:
             "customer": None,
             "checkout": None,
             "razorpay_order": None,
+            "payment": None,
             "payment_verification": None,
             "order": None,
             "final_action": "EXECUTION_FAILED",

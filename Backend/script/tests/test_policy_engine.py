@@ -50,7 +50,7 @@ PASSED = 0
 FAILED = 0
 
 
-def test(name, condition, details=""):
+def assert_test(name, condition, details=""):
     """
     Simple test runner.
     """
@@ -78,7 +78,7 @@ def expect_equal(
     actual,
     expected,
 ):
-    test(
+    assert_test(
         name,
         actual == expected,
         f"Expected: {expected} | Actual: {actual}",
@@ -444,6 +444,10 @@ def main():
 # ============================================================
 # ENTRY POINT
 # ============================================================
+
+def test_policy_engine_regression():
+    assert main() == 0
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

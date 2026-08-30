@@ -1,6 +1,6 @@
 """
 AGENTCOMMERCE OS
-PHASE 05 — AGENT SESSION MEMORY
+PHASE 05 — AGENT SESSION MEMORY (CUSTOMER-SCOPED)
 
 Stores short-term conversational state for the Commerce Agent.
 
@@ -14,167 +14,145 @@ Purpose:
     "the first one"
     "give me 10% off"
 
-This is SHORT-TERM agent memory.
+CRITICAL: Memory is CUSTOMER-SCOPED, not global.
+Each customer gets their own conversation context.
+
+This is SHORT-TERM agent memory per customer.
 It is not the long-term customer intelligence system.
 """
 
 
-class AgentMemory:
+class CustomerMemoryScope:
+    """Single customer's conversation memory."""
 
     def __init__(self):
-
-        self.customer_id = None
-
         self.last_message = None
-
         self.last_intent = None
-
         self.last_products = []
-
         self.selected_product = None
-
         self.last_merchant_decision = None
-
         self.last_negotiation_result = None
-
         self.last_policy_result = None
-
         self.pending_offer = None
 
 
-    # ============================================================
-    # CUSTOMER
-    # ============================================================
+class AgentMemory:
+    """Customer-scoped conversation memory manager."""
+
+    def __init__(self):
+        self.scopes = {}
+        self.customer_id = None
+        self.last_message = None
+        self.last_intent = None
+        self.last_products = []
+        self.selected_product = None
+        self.last_merchant_decision = None
+        self.last_negotiation_result = None
+        self.last_policy_result = None
+        self.pending_offer = None
+
+    def _get_scope(self, customer_id=None):
+        if customer_id is None:
+            return self
+        if customer_id not in self.scopes:
+            self.scopes[customer_id] = CustomerMemoryScope()
+        return self.scopes[customer_id]
 
     def set_customer(self, customer_id):
-
         self.customer_id = customer_id
 
+    def set_message(self, message, customer_id=None):
+        scope = self._get_scope(customer_id)
+        scope.last_message = message
+        if customer_id is None:
+            self.last_message = message
 
-    # ============================================================
-    # MESSAGE
-    # ============================================================
+    def get_message(self, customer_id=None):
+        return self._get_scope(customer_id).last_message
 
-    def set_message(self, message):
+    def set_intent(self, intent, customer_id=None):
+        scope = self._get_scope(customer_id)
+        scope.last_intent = intent
+        if customer_id is None:
+            self.last_intent = intent
 
-        self.last_message = message
+    def get_intent(self, customer_id=None):
+        return self._get_scope(customer_id).last_intent
 
-
-    # ============================================================
-    # INTENT
-    # ============================================================
-
-    def set_intent(self, intent):
-
-        self.last_intent = intent
-
-
-    # ============================================================
-    # PRODUCTS
-    # ============================================================
-
-    def set_products(self, products):
-
-        self.last_products = products
-
-        # First product becomes the default selected product
+    def set_products(self, products, customer_id=None):
+        scope = self._get_scope(customer_id)
+        scope.last_products = products
         if products:
+            scope.selected_product = products[0]
+        if customer_id is None:
+            self.last_products = products
+            self.selected_product = products[0] if products else None
 
-            self.selected_product = products[0]
+    def get_products(self, customer_id=None):
+        return self._get_scope(customer_id).last_products
 
+    def select_product(self, index=0, customer_id=None):
+        scope = self._get_scope(customer_id)
 
-    # ============================================================
-    # SELECT PRODUCT
-    # ============================================================
-
-    def select_product(self, index=0):
-
-        if not self.last_products:
-
+        if not scope.last_products:
+            return None
+        if index < 0 or index >= len(scope.last_products):
             return None
 
-        if index < 0 or index >= len(self.last_products):
+        scope.selected_product = scope.last_products[index]
+        if customer_id is None:
+            self.selected_product = scope.selected_product
+        return scope.selected_product
 
-            return None
+    def get_selected_product(self, customer_id=None):
+        return self._get_scope(customer_id).selected_product
 
-        self.selected_product = self.last_products[index]
+    def set_merchant_decision(self, decision, customer_id=None):
+        scope = self._get_scope(customer_id)
+        scope.last_merchant_decision = decision
+        if customer_id is None:
+            self.last_merchant_decision = decision
 
-        return self.selected_product
+    def get_merchant_decision(self, customer_id=None):
+        return self._get_scope(customer_id).last_merchant_decision
 
+    def set_negotiation_result(self, result, customer_id=None):
+        scope = self._get_scope(customer_id)
+        scope.last_negotiation_result = result
+        if customer_id is None:
+            self.last_negotiation_result = result
 
-    # ============================================================
-    # GET SELECTED PRODUCT
-    # ============================================================
+    def get_negotiation_result(self, customer_id=None):
+        return self._get_scope(customer_id).last_negotiation_result
 
-    def get_selected_product(self):
+    def set_policy_result(self, result, customer_id=None):
+        scope = self._get_scope(customer_id)
+        scope.last_policy_result = result
+        if customer_id is None:
+            self.last_policy_result = result
 
-        return self.selected_product
+    def get_policy_result(self, customer_id=None):
+        return self._get_scope(customer_id).last_policy_result
 
+    def set_pending_offer(self, offer, customer_id=None):
+        scope = self._get_scope(customer_id)
+        scope.pending_offer = offer
+        if customer_id is None:
+            self.pending_offer = offer
 
-    # ============================================================
-    # MERCHANT DECISION
-    # ============================================================
+    def get_pending_offer(self, customer_id=None):
+        return self._get_scope(customer_id).pending_offer
 
-    def set_merchant_decision(self, decision):
+    def clear_pending_offer(self, customer_id=None):
+        scope = self._get_scope(customer_id)
+        scope.pending_offer = None
+        if customer_id is None:
+            self.pending_offer = None
 
-        self.last_merchant_decision = decision
-
-    def set_negotiation_result(self, result):
-
-        self.last_negotiation_result = result
-
-
-    # ============================================================
-    # POLICY
-    # ============================================================
-
-    def set_policy_result(self, result):
-
-        self.last_policy_result = result
-
-    def set_pending_offer(self, offer):
-
-        self.pending_offer = offer
-
-    def get_pending_offer(self):
-
-        return self.pending_offer
-
-    def clear_pending_offer(self):
-
-        self.pending_offer = None
-
-
-    # ============================================================
-    # REFERENCE RESOLUTION
-    # ============================================================
-
-    def resolve_product_reference(self, message):
-
-        """
-        Resolve simple conversational references.
-
-        Examples:
-
-        "this product"
-        "that product"
-        "this one"
-        "that one"
-
-        -> currently selected product
-
-        "first product"
-        -> first recommendation
-
-        "second product"
-        -> second recommendation
-        """
-
+    def resolve_product_reference(self, message, customer_id=None):
+        """Resolve simple conversational references for a customer."""
+        scope = self._get_scope(customer_id)
         text = message.lower().strip()
-
-        # --------------------------------------------------------
-        # Current product references
-        # --------------------------------------------------------
 
         references = [
             "this product",
@@ -186,92 +164,55 @@ class AgentMemory:
         ]
 
         for reference in references:
-
             if reference in text:
-
-                return self.selected_product
-
-
-        # --------------------------------------------------------
-        # Numbered product references
-        # --------------------------------------------------------
+                return scope.selected_product
 
         numbered_products = {
-
-            "first product": 0,
-            "second product": 1,
-            "third product": 2,
-            "fourth product": 3,
-            "fifth product": 4,
-
+            "first": 0,
+            "second": 1,
+            "third": 2,
+            "fourth": 3,
+            "fifth": 4,
         }
 
-
-        for reference, index in numbered_products.items():
-
-            if reference in text:
-
-                return self.select_product(index)
-
+        for word, index in numbered_products.items():
+            if word in text and "product" in text and index < len(scope.last_products):
+                return scope.last_products[index]
 
         return None
 
+    def clear_customer(self, customer_id):
+        """Clear all memory for a customer (logout/session end)."""
+        if customer_id in self.scopes:
+            del self.scopes[customer_id]
 
-    # ============================================================
-    # MEMORY SNAPSHOT
-    # ============================================================
-
-    def snapshot(self):
-
-        selected = self.selected_product
+    def snapshot(self, customer_id=None):
+        scope = self._get_scope(customer_id)
+        selected = scope.selected_product
 
         return {
-
-            "customer_id": self.customer_id,
-
-            "last_message": self.last_message,
-
+            "customer_id": customer_id or self.customer_id,
+            "last_message": scope.last_message,
             "selected_product": (
-
-                selected.product_id
-                if selected
-                else None
+                selected.product_id if selected is not None and hasattr(selected, "product_id") else None
             ),
-
             "available_products": [
-
-                product.product_id
-
-                for product in self.last_products
-
+                product.product_id if hasattr(product, "product_id") else product
+                for product in scope.last_products
             ],
-
         }
 
 
-# ============================================================
-# TEST
-# ============================================================
-
 if __name__ == "__main__":
-
     print("=" * 80)
     print("AGENT MEMORY TEST")
     print("=" * 80)
 
-
     memory = AgentMemory()
-
     memory.set_customer(5176)
-
     print("\nCustomer:")
     print(memory.customer_id)
-
-
     print("\nMemory initialized successfully.")
-
     print("\nSnapshot:")
-
-    print(memory.snapshot())
-
+    print(memory.snapshot(5176))
     print("=" * 80)

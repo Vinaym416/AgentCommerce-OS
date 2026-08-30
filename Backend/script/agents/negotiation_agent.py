@@ -2,13 +2,36 @@
 AGENTCOMMERCE OS
 PHASE 06 — NEGOTIATION AGENT
 
-The Negotiation Agent determines how the commerce system
-should respond to a customer's discount request.
+OWNERSHIP: Price Negotiation Only
+────────────────────────────────
 
-It does NOT directly modify prices.
+The Negotiation Agent handles ONLY:
 
-It proposes a negotiation action which is later
-validated by the Policy Engine.
+    original_price
+           ↓
+    customer context
+           ↓
+    merchant policy
+           ↓
+    negotiated_price
+
+What it does NOT do:
+    ❌ Verify payments
+    ❌ Process Razorpay
+    ❌ Create orders
+    ❌ Access frontend payment data
+    ❌ Modify transaction outside negotiation
+
+Result:
+    - action: ACCEPT_OFFER | COUNTER_OFFER | NO_NEGOTIATION
+    - offered_discount: The merchant's response to customer request
+    
+This result is consumed by:
+    - CommerceAgent (for response building)
+    - NegotiationAgent → TransactionManager (price update)
+    
+The negotiated_price + discount_percent → final_price
+is calculated by TransactionManager, not NegotiationAgent.
 """
 
 from dataclasses import dataclass

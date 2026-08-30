@@ -20,6 +20,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
+from script.payment.payment_service import PaymentService
 from script.payment.payment_verifier import (
     PaymentVerifier,
     PaymentVerificationResult,
@@ -56,6 +57,84 @@ def generate_signature(
         hashlib.sha256
 
     ).hexdigest()
+
+
+# ============================================================
+# REGRESSION TEST: SERVER-AUTHORITATIVE ORDER ID
+# ============================================================
+
+
+class FakeTransactionManager:
+
+    def __init__(self, transaction):
+        self.transaction = transaction
+
+    def get_by_transaction_id(self, transaction_id):
+        return self.transaction
+
+    def create_or_update(self, **kwargs):
+        return self.transaction
+
+
+class FakeRepository:
+
+    def update_payment(self, **kwargs):
+        return True
+
+
+class FakeRazorpayClient:
+
+    def __init__(self, amount):
+        self.amount = amount
+
+    def fetch_order(self, razorpay_order_id):
+        return type(
+            "OrderResult",
+            (),
+            {
+                "success": True,
+                "amount": self.amount,
+                "currency": "INR",
+                "razorpay_order_id": razorpay_order_id,
+            },
+        )()
+
+
+def test_server_uses_stored_order_id_for_verification():
+    stored_order_id = "order_REAL_123"
+    payment_id = "pay_TEST456"
+    signature = generate_signature(
+        order_id=stored_order_id,
+        payment_id=payment_id,
+    )
+
+    transaction = type(
+        "Txn",
+        (),
+        {
+            "customer_id": 5176,
+            "transaction_id": "TRX-1",
+            "final_price": 705.81,
+            "razorpay_order_id": stored_order_id,
+        },
+    )()
+
+    service = PaymentService(
+        payment_verifier=PaymentVerifier(key_secret=TEST_SECRET),
+        transaction_manager=FakeTransactionManager(transaction),
+    )
+    service.razorpay_client = FakeRazorpayClient(705.81)
+
+    result = service.verify_transaction_payment(
+        transaction_id="TRX-1",
+        razorpay_order_id=None,
+        razorpay_payment_id=payment_id,
+        razorpay_signature=signature,
+        expected_amount=705.81,
+    )
+
+    assert result["success"] is True, result
+    assert result["razorpay_order_id"] == stored_order_id, result
 
 
 # ============================================================
@@ -251,10 +330,6 @@ check(
 # TEST 5 — MISSING SECRET
 # ============================================================
 
-verifier = PaymentVerifier(
-    key_secret=None
-)
-
 # Prevent environment credentials from affecting this test.
 
 original_secret = os.environ.pop(
@@ -263,6 +338,10 @@ original_secret = os.environ.pop(
 )
 
 try:
+
+    verifier = PaymentVerifier(
+        key_secret=None
+    )
 
     result = verifier.verify_payment_signature(
 
