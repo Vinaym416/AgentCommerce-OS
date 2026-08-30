@@ -7,13 +7,19 @@ from typing import Optional
 from dotenv import load_dotenv
 
 
-SCRIPT_DIR = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
+SCRIPT_DIR = Path(__file__).resolve().parents[1]
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from providers.local import get_local_client
-from schemas import BuyerIntent
+try:
+    from script.agents.schemas import BuyerIntent
+except ImportError:  # pragma: no cover
+    from agents.schemas import BuyerIntent
 
 load_dotenv()
 
@@ -25,7 +31,10 @@ class BuyerAgent:
             "Qwen/Qwen2.5-7B-Instruct:featherless-ai",
         )
 
-        self.client = get_local_client()
+        try:
+            self.client = get_local_client()
+        except Exception:
+            self.client = None
 
     def _build_system_prompt(self) -> str:
         return """
@@ -54,11 +63,72 @@ Rules:
 - Do not invent preferences.
 """
 
+    def _fallback_intent(self, message: str) -> BuyerIntent:
+        text = message.lower()
+        budget = None
+
+        for pattern in [
+            r"under\s*(?:inr|rs|₹)?\s*([0-9]+)",
+            r"budget\s*(?:is|under|of)?\s*(?:inr|rs|₹)?\s*([0-9]+)",
+            r"(?:<=|less than|under)\s*(?:inr|rs|₹)?\s*([0-9]+)",
+        ]:
+            import re
+            match = re.search(pattern, text)
+            if match:
+                budget = float(match.group(1))
+                break
+
+        discount_requested = any(
+            token in text
+            for token in [
+                "discount",
+                "off",
+                "% off",
+                "percent off",
+                "10%",
+                "20%",
+                "50%",
+                "give me",
+            ]
+        )
+
+        max_discount_requested = None
+        for pattern in [
+            r"(\d{1,2})\s*%",
+            r"(\d{1,2})\s*percent",
+        ]:
+            import re
+            matches = re.findall(pattern, text)
+            if matches:
+                max_discount_requested = float(max(matches))
+                break
+
+        if "immediately" in text or "urgent" in text or "right now" in text:
+            urgency = "high"
+        elif "soon" in text or "asap" in text:
+            urgency = "normal"
+        else:
+            urgency = "normal"
+
+        return BuyerIntent(
+            intent="purchase" if budget is not None or "want" in text or "buy" in text else "browse",
+            budget=budget,
+            urgency=urgency,
+            discount_requested=discount_requested,
+            max_discount_requested=max_discount_requested,
+            product_preferences=[],
+            constraints=[],
+            confidence=0.72,
+        )
+
     def analyze(self, message: str) -> BuyerIntent:
         user_message = message
 
         if not user_message.strip():
             raise ValueError("Buyer message cannot be empty.")
+
+        if self.client is None:
+            return self._fallback_intent(user_message)
 
         try:
             completion = self.client.chat.completions.create(
@@ -79,20 +149,16 @@ Rules:
 
             raw_output = completion.choices[0].message.content
 
-        except Exception as exc:
-            raise RuntimeError(
-                f"Gemini request failed: {exc}"
-            ) from exc
+        except Exception:
+            return self._fallback_intent(user_message)
 
         if not raw_output:
             raise RuntimeError("Gemini returned an empty response.")
 
         try:
             parsed = json.loads(raw_output)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(
-                "Gemini returned invalid JSON."
-            ) from exc
+        except json.JSONDecodeError:
+            return self._fallback_intent(user_message)
 
         confidence = parsed.get("confidence")
 
@@ -100,9 +166,7 @@ Rules:
             if confidence <= 100:
                 parsed["confidence"] = confidence / 100
             else:
-                raise RuntimeError(
-                    "Gemini returned an invalid confidence value."
-                )
+                return self._fallback_intent(user_message)
 
         return BuyerIntent(**parsed)
 

@@ -1,18 +1,25 @@
+from dataclasses import asdict
+from datetime import datetime, timezone
 from typing import Dict, Optional
 
 from script.transaction.transaction_state import (
     TransactionState
 )
+from script.database.repositories.transaction_repository import (
+    TransactionRepository
+)
 
 
 class TransactionManager:
 
-    def __init__(self):
+    def __init__(self, repository=None):
 
         self.transactions: Dict[
             int,
             TransactionState
         ] = {}
+
+        self.repository = repository or TransactionRepository()
 
     # ========================================================
     # GET STATE
@@ -23,9 +30,20 @@ class TransactionManager:
         customer_id: int
     ) -> Optional[TransactionState]:
 
-        return self.transactions.get(
-            customer_id
-        )
+        state = self.transactions.get(customer_id)
+
+        if state is not None:
+            return state
+
+        document = self.repository.get_by_customer_id(customer_id)
+
+        if document is None:
+            return None
+
+        document.pop("_id", None)
+        state = TransactionState(**document)
+        self.transactions[customer_id] = state
+        return state
 
     # ========================================================
     # CREATE / UPDATE
@@ -59,6 +77,9 @@ class TransactionManager:
                     key,
                     value
                 )
+
+            state.updated_at = datetime.now(timezone.utc).isoformat()
+            self.repository.upsert(asdict(state))
 
         return state
 

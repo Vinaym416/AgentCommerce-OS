@@ -1,5 +1,7 @@
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Optional
+from uuid import uuid4
 
 
 @dataclass
@@ -16,6 +18,10 @@ class TransactionState:
     ORDER_FAILED = "ORDER_FAILED"
 
     customer_id: int
+
+    transaction_id: str = ""
+
+    updated_at: str = ""
 
     product_id: Optional[int] = None
 
@@ -36,3 +42,9 @@ class TransactionState:
     order_id: Optional[str] = None
 
     customer_accepted: bool = False
+
+    def __post_init__(self):
+        if not self.transaction_id:
+            self.transaction_id = "TRX-" + uuid4().hex[:12].upper()
+        if not self.updated_at:
+            self.updated_at = datetime.now(timezone.utc).isoformat()

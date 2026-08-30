@@ -48,9 +48,9 @@ if str(ROOT) not in sys.path:
 from script.agents.buyer_agent import BuyerAgent
 from script.agents.schemas import ProductCandidate
 from script.agents.negotiation_agent import NegotiationAgent
-from script.agents.checkout_agent import CheckoutAgent
-from script.agents.payment_agent import PaymentAgent, PaymentResult
-from script.agents.order_agent import OrderAgent, OrderResult
+from script.agents.commerce_execution_agent import CommerceExecutionAgent
+from script.agents.payment_agent import PaymentResult
+from script.agents.order_agent import OrderResult
 
 from script.transaction.transaction_manager import TransactionManager
 from script.transaction.transaction_state import TransactionState
@@ -94,11 +94,13 @@ class CommerceAgent:
 
         self.negotiation_agent = NegotiationAgent()
 
-        self.checkout_agent = CheckoutAgent()
+        self.execution_agent = CommerceExecutionAgent()
 
-        self.payment_agent = PaymentAgent()
+        self.checkout_agent = self.execution_agent.checkout_agent
 
-        self.order_agent = OrderAgent()
+        self.payment_agent = self.execution_agent.payment_agent
+
+        self.order_agent = self.execution_agent.order_agent
 
         self.transaction_manager = TransactionManager()
 
@@ -118,7 +120,7 @@ class CommerceAgent:
         simulate_failure: bool = False,
     ):
         """Execute payment explicitly after checkout approval."""
-        return self.payment_agent.process_payment(
+        return self.execution_agent.payment_agent.process_payment(
             product_id=product_id,
             amount=amount,
             payment_method=payment_method,
@@ -188,6 +190,10 @@ class CommerceAgent:
                 customer_id
             )
         )
+        customer = self.customer_context.get_customer(customer_id)
+
+        if customer is None:
+            trace.append("ANONYMOUS_CUSTOMER")
 
         # ----------------------------------------------------
         # 2. BUYER AGENT
@@ -511,40 +517,58 @@ class CommerceAgent:
                 ),
             })
 
-        payment = self._execute_payment(
-            checkout=checkout,
-            payment_method=payment_method,
-            simulate_failure=simulate_failure,
-           execute_payment=execute_payment,
-        )
-
-        order = self._create_order(
-            customer_id=customer_id,
-            payment=payment,
-        )
-
         # ----------------------------------------------------
-        # 11. FINAL RESPONSE
+        # 11. DELEGATE EXECUTION TO COMMERCE EXECUTION AGENT
         # ----------------------------------------------------
+
+        if final_action in {"OFFER_REQUESTED", "COUNTER_OFFER"}:
+            return self._build_response(
+                intent=intent,
+                customer=customer,
+                products=products,
+                merchant_decision=merchant_decision,
+                negotiation=negotiation,
+                checkout=None,
+                payment=None,
+                order=None,
+                policy_result=policy_result,
+                final_action=final_action,
+                trace=trace,
+                purchase_score=purchase_score,
+                discount_score=discount_score,
+            )
+
+        if final_action in {"RECOMMEND_PRODUCT", "NEGOTIATE"}:
+            return self._build_response(
+                intent=intent,
+                customer=customer,
+                products=products,
+                merchant_decision=merchant_decision,
+                negotiation=negotiation,
+                checkout=None,
+                payment=None,
+                order=None,
+                policy_result=policy_result,
+                final_action=final_action,
+                trace=trace,
+                purchase_score=purchase_score,
+                discount_score=discount_score,
+            )
 
         return self._build_response(
             intent=intent,
             customer=customer,
             products=products,
-            merchant_decision=(
-                merchant_decision
-            ),
+            merchant_decision=merchant_decision,
             negotiation=negotiation,
-            checkout=checkout,
-            payment=payment,
-            order=order,
-            policy_result=(
-                policy_result
-            ),
+            checkout=None,
+            payment=None,
+            order=None,
+            policy_result=policy_result,
             final_action=final_action,
             trace=trace,
             purchase_score=purchase_score,
-            discount_score=discount_score
+            discount_score=discount_score,
         )
 
     def _execute_payment(
@@ -560,7 +584,7 @@ class CommerceAgent:
         if not checkout.payment_ready:
             return None
 
-        return self.process_payment(
+        return self.execution_agent.payment_agent.process_payment(
             product_id=checkout.product_id,
             amount=checkout.final_price,
             payment_method=payment_method,
@@ -628,59 +652,44 @@ class CommerceAgent:
         transaction.customer_accepted = True
         transaction.status = TransactionState.OFFER_ACCEPTED
 
-        checkout = self.checkout_agent.prepare_checkout(
+        execution_result = self.execution_agent.execute(
+            customer_id=transaction.customer_id,
             product_id=transaction.product_id,
             product_price=transaction.original_price,
             discount_percent=transaction.discount_percent,
-        )
-        transaction.checkout_ready = checkout.payment_ready
-        transaction.status = (
-            TransactionState.CHECKOUT_READY
-            if checkout.payment_ready
-            else TransactionState.ORDER_FAILED
-        )
-
-        if execute_payment and checkout.payment_ready:
-            transaction.status = TransactionState.PAYMENT_PENDING
-
-        payment = self._execute_payment(
-            checkout=checkout,
             payment_method=payment_method,
             execute_payment=execute_payment,
             simulate_failure=simulate_failure,
         )
 
-        if payment is None:
-            transaction.payment_status = "NOT_STARTED"
-        else:
-            transaction.payment_status = payment.status
-            transaction.payment_transaction_id = payment.transaction_id
-
-            transaction.status = (
-                TransactionState.PAYMENT_SUCCESS
-                if payment.status == "PAYMENT_SUCCESS"
-                else TransactionState.PAYMENT_FAILED
-            )
-
-        order = self._create_order(
-            customer_id=transaction.customer_id,
-            payment=payment,
-        )
-
-        if order is not None:
-            transaction.status = TransactionState.ORDER_CREATED
-            transaction.order_id = order.order_id
-        elif payment is not None and payment.status == "PAYMENT_SUCCESS":
-            transaction.status = TransactionState.ORDER_FAILED
-
         self.memory.clear_pending_offer()
 
-        return self._build_transaction_response(
-            transaction=transaction,
-            checkout=checkout,
-            payment=payment,
-            order=order,
-        )
+        response = {
+            "customer": {
+                "customer_id": transaction.customer_id,
+                "known_customer": True,
+            },
+            "transaction": {
+                "status": transaction.status,
+                "customer_accepted": transaction.customer_accepted,
+                "product_id": transaction.product_id,
+                "discount_percent": transaction.discount_percent,
+                "final_price": transaction.final_price,
+            },
+            "final_action": execution_result.get("final_action", "EXECUTION_COMPLETE"),
+            "checkout": execution_result.get("checkout"),
+            "payment": execution_result.get("payment"),
+            "order": execution_result.get("order"),
+            "agent_trace": execution_result.get("agent_trace", []),
+        }
+
+        if execution_result.get("order") is not None:
+            transaction.status = TransactionState.ORDER_CREATED
+            transaction.order_id = execution_result["order"].get("order_id")
+        elif execution_result.get("payment") is not None and execution_result["payment"].get("status") == "PAYMENT_SUCCESS":
+            transaction.status = TransactionState.ORDER_FAILED
+
+        return response
 
     def _build_transaction_response(
         self,

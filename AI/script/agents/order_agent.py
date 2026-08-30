@@ -1,6 +1,7 @@
+
 """
 AGENTCOMMERCE OS
-PHASE 06 — ORDER AGENT
+PHASE 06C — ORDER AGENT
 
 Responsible for creating a commerce order
 after successful payment.
@@ -18,14 +19,15 @@ Order Created
 Order Confirmation
 
 IMPORTANT:
-The Order Agent does NOT process payments.
-It only creates an order after payment success.
+- The Order Agent does NOT process payments.
+- An order can only be created after successful payment.
+- Failed/invalid payments never create orders.
 """
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from uuid import uuid4
 from typing import Optional
+from uuid import uuid4
 
 
 # ============================================================
@@ -72,8 +74,8 @@ class OrderAgent:
 
     def create_order(
         self,
-        customer_id: int,
-        product_id: int,
+        customer_id: Optional[int],
+        product_id: Optional[int],
         amount: float,
         currency: str = "INR",
         payment_status: str = "SUCCESS",
@@ -81,123 +83,113 @@ class OrderAgent:
     ) -> OrderResult:
 
         # ----------------------------------------------------
-        # PAYMENT VALIDATION
+        # PAYMENT MUST BE SUCCESSFUL
         # ----------------------------------------------------
 
         if payment_status != "SUCCESS":
 
-            return OrderResult(
-
-                status="ORDER_NOT_CREATED",
-
-                order_id=None,
-
+            return self._failure(
                 customer_id=customer_id,
-
                 product_id=product_id,
-
                 amount=amount,
-
                 currency=currency,
-
-                payment_transaction_id=(
-                    payment_transaction_id
-                ),
-
-                created_at=self._timestamp(),
-
-                reason=(
-                    "order_requires_successful_payment"
-                )
+                payment_transaction_id=payment_transaction_id,
+                reason="order_requires_successful_payment",
             )
 
         # ----------------------------------------------------
-        # BASIC VALIDATION
+        # SUCCESSFUL PAYMENT MUST HAVE TRANSACTION ID
+        # ----------------------------------------------------
+
+        if not payment_transaction_id:
+
+            return self._failure(
+                customer_id=customer_id,
+                product_id=product_id,
+                amount=amount,
+                currency=currency,
+                payment_transaction_id=None,
+                reason="payment_transaction_id_required",
+            )
+
+        # ----------------------------------------------------
+        # CUSTOMER VALIDATION
         # ----------------------------------------------------
 
         if customer_id is None:
 
-            return OrderResult(
-
-                status="ORDER_NOT_CREATED",
-
-                order_id=None,
-
+            return self._failure(
                 customer_id=None,
-
                 product_id=product_id,
-
                 amount=amount,
-
                 currency=currency,
-
-                payment_transaction_id=(
-                    payment_transaction_id
-                ),
-
-                created_at=self._timestamp(),
-
-                reason=(
-                    "customer_id_required"
-                )
+                payment_transaction_id=payment_transaction_id,
+                reason="customer_id_required",
             )
+
+        # ----------------------------------------------------
+        # PRODUCT VALIDATION
+        # ----------------------------------------------------
 
         if product_id is None:
 
-            return OrderResult(
-
-                status="ORDER_NOT_CREATED",
-
-                order_id=None,
-
+            return self._failure(
                 customer_id=customer_id,
-
                 product_id=None,
-
                 amount=amount,
-
                 currency=currency,
+                payment_transaction_id=payment_transaction_id,
+                reason="product_id_required",
+            )
 
-                payment_transaction_id=(
-                    payment_transaction_id
-                ),
+        # ----------------------------------------------------
+        # AMOUNT VALIDATION
+        # ----------------------------------------------------
 
-                created_at=self._timestamp(),
+        try:
+            amount = float(amount)
 
-                reason=(
-                    "product_id_required"
-                )
+        except (TypeError, ValueError):
+
+            return self._failure(
+                customer_id=customer_id,
+                product_id=product_id,
+                amount=0.0,
+                currency=currency,
+                payment_transaction_id=payment_transaction_id,
+                reason="invalid_order_amount",
             )
 
         if amount <= 0:
 
-            return OrderResult(
-
-                status="ORDER_NOT_CREATED",
-
-                order_id=None,
-
+            return self._failure(
                 customer_id=customer_id,
-
                 product_id=product_id,
-
                 amount=amount,
-
                 currency=currency,
-
-                payment_transaction_id=(
-                    payment_transaction_id
-                ),
-
-                created_at=self._timestamp(),
-
-                reason=(
-                    "order_amount_must_be_positive"
-                )
+                payment_transaction_id=payment_transaction_id,
+                reason="order_amount_must_be_positive",
             )
 
         # ----------------------------------------------------
-        # CREATE ORDER ID
+        # CURRENCY VALIDATION
+        # ----------------------------------------------------
+
+        if not currency:
+
+            return self._failure(
+                customer_id=customer_id,
+                product_id=product_id,
+                amount=amount,
+                currency=currency,
+                payment_transaction_id=payment_transaction_id,
+                reason="currency_required",
+            )
+
+        currency = currency.upper()
+
+        # ----------------------------------------------------
+        # GENERATE ORDER ID
         # ----------------------------------------------------
 
         order_id = (
@@ -220,8 +212,8 @@ class OrderAgent:
             product_id=product_id,
 
             amount=round(
-                float(amount),
-                2
+                amount,
+                2,
             ),
 
             currency=currency,
@@ -234,7 +226,54 @@ class OrderAgent:
 
             reason=(
                 "order_created_after_successful_payment"
+            ),
+        )
+
+    # ========================================================
+    # FAILURE RESULT
+    # ========================================================
+
+    def _failure(
+        self,
+        *,
+        customer_id,
+        product_id,
+        amount,
+        currency,
+        payment_transaction_id,
+        reason,
+    ) -> OrderResult:
+
+        try:
+            normalized_amount = round(
+                float(amount),
+                2,
             )
+
+        except (TypeError, ValueError):
+            normalized_amount = 0.0
+
+        return OrderResult(
+
+            status="ORDER_NOT_CREATED",
+
+            order_id=None,
+
+            customer_id=customer_id,
+
+            product_id=product_id,
+
+            amount=normalized_amount,
+
+            currency=currency,
+
+            payment_transaction_id=(
+                payment_transaction_id
+            ),
+
+            created_at=self._timestamp(),
+
+            reason=reason,
         )
 
     # ========================================================
@@ -243,11 +282,9 @@ class OrderAgent:
 
     def _timestamp(self) -> str:
 
-        return (
-            datetime.now(
-                timezone.utc
-            ).isoformat()
-        )
+        return datetime.now(
+            timezone.utc
+        ).isoformat()
 
 
 # ============================================================
@@ -287,7 +324,7 @@ def main():
 
         payment_status="SUCCESS",
 
-        payment_transaction_id="TXN-TEST-001"
+        payment_transaction_id="TXN-TEST-001",
     )
 
     print(result)
@@ -313,7 +350,7 @@ def main():
 
         payment_status="FAILED",
 
-        payment_transaction_id="TXN-TEST-002"
+        payment_transaction_id="TXN-TEST-002",
     )
 
     print(result)
@@ -339,7 +376,33 @@ def main():
 
         payment_status="SUCCESS",
 
-        payment_transaction_id="TXN-TEST-003"
+        payment_transaction_id="TXN-TEST-003",
+    )
+
+    print(result)
+
+    # --------------------------------------------------------
+    # TEST 4 — SUCCESS WITHOUT TRANSACTION ID
+    # --------------------------------------------------------
+
+    print("\n")
+    print("-" * 80)
+    print("TEST 4 — SUCCESS WITHOUT TRANSACTION ID")
+    print("-" * 80)
+
+    result = agent.create_order(
+
+        customer_id=5176,
+
+        product_id=453,
+
+        amount=705.81,
+
+        currency="INR",
+
+        payment_status="SUCCESS",
+
+        payment_transaction_id=None,
     )
 
     print(result)
@@ -348,3 +411,4 @@ def main():
 if __name__ == "__main__":
 
     main()
+

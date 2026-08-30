@@ -30,29 +30,32 @@ class OpportunityEngine:
 
         if customer:
 
-            customer_confidence = float(
-                customer[
-                    "customer_buying_confidence"
-                ]
+                buying_confidence = float(
+                customer.get(
+                "customer_buying_confidence",
+            0.25
             )
+        )
 
-            discount_dependence = float(
-                customer[
-                    "discount_dependence_score"
-                ]
+                discount_dependence = float(
+            customer.get(
+            "discount_dependence_score",
+            0.50
             )
+        )
 
-            customer_affinity = float(
-                customer[
-                    "customer_affinity_score"
-                ]
+                customer_affinity = float(
+            customer.get(
+            "customer_affinity_score",
+            0.50
             )
+        )
 
         else:
 
             # Anonymous user fallback
-            customer_confidence = 0.50
-            discount_dependence = 0.25
+            buying_confidence = 0.25
+            discount_dependence = 0.50
             customer_affinity = 0.50
 
         # --------------------------------------------------
@@ -81,7 +84,7 @@ class OpportunityEngine:
         purchase_score = (
             0.25 * product_score
             +
-            0.25 * customer_confidence
+            0.25 * buying_confidence
             +
             0.20 * customer_affinity
             +

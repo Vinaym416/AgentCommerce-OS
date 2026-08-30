@@ -1,30 +1,15 @@
-import os
 import pandas as pd
 
+from script.database.repositories.product_repository import ProductRepository
 
 # ============================================================
 # AGENTCOMMERCE OS — PRODUCT RETRIEVER
 # ============================================================
 
-BASE_DIR = os.path.dirname(
-    os.path.dirname(
-        os.path.dirname(os.path.abspath(__file__))
-    )
-)
-
-CATALOG_FILE = os.path.join(
-    BASE_DIR,
-    "data",
-    "catalog",
-    "product_catalog.csv"
-)
-
-
 class ProductRetriever:
 
-    def __init__(self, catalog_file=CATALOG_FILE):
-
-        self.catalog = pd.read_csv(catalog_file)
+    def __init__(self, repository=None):
+        self.repository = repository or ProductRepository()
 
     # --------------------------------------------------------
     # Retrieve products
@@ -38,49 +23,14 @@ class ProductRetriever:
         limit=5
     ):
 
-        df = self.catalog.copy()
+        products = self.repository.search(
+            budget=budget,
+            category=category,
+            min_rating=min_rating,
+            limit=limit,
+        )
 
-        # Budget filter
-        if budget is not None:
-
-            df = df[
-                df["current_price"] <= budget
-            ]
-
-        # Category filter
-        if category is not None:
-
-            df = df[
-                df["product_category"] == category
-            ]
-
-        # Rating filter
-        if min_rating is not None:
-
-            df = df[
-                df["avg_rating"] >= min_rating
-            ]
-
-        # ----------------------------------------------------
-        # Ranking
-        # ----------------------------------------------------
-
-        if len(df) > 0:
-
-            df["retrieval_score"] = (
-                df["product_score"] * 0.50
-                +
-                df["conversion_rate"] * 0.25
-                +
-                df["quality_score"] * 0.25
-            )
-
-            df = df.sort_values(
-                "retrieval_score",
-                ascending=False
-            )
-
-        return df.head(limit)
+        return pd.DataFrame(products)
 
     # --------------------------------------------------------
     # Display results

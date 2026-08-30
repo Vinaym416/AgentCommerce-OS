@@ -14,33 +14,16 @@ from typing import Optional
 
 import pandas as pd
 
-
-ROOT = Path(__file__).resolve().parents[2]
-
-CUSTOMER_FEATURES = (
-    ROOT
-    / "data"
-    / "features"
-    / "customer_features.csv"
-)
+from script.database.repositories.customer_repository import CustomerRepository
 
 
 class CustomerContext:
 
     def __init__(
         self,
-        customer_file=CUSTOMER_FEATURES
+        repository=None
     ):
-
-        self.customers = pd.read_csv(customer_file)
-
-        self.customers["customer_id"] = (
-            self.customers["customer_id"].astype(int)
-        )
-
-        self.update_customer_affinity_score()
-        self.update_customer_buying_confidence()
-        self.update_customer_discount_dependence_score()
+        self.repository = repository or CustomerRepository()
 
     def get_customer(
         self,
@@ -50,81 +33,41 @@ class CustomerContext:
         if customer_id is None:
             return None
 
-        matches = self.customers[
-            self.customers["customer_id"] == int(customer_id)
-        ]
+        row = self.repository.get_by_customer_id(int(customer_id))
 
-        if matches.empty:
+        if row is None:
             return None
 
-        row = matches.iloc[0]
-
         return {
-            "customer_id": int(
-                row["customer_id"]
-            ),
+            "customer_id": int(row["customer_id"]),
 
-            "sessions": int(
-                row["customer_sessions"]
-            ),
+            "sessions": int(row.get("customer_sessions", 0)),
 
-            "purchases": int(
-                row["customer_purchases"]
-            ),
+            "purchases": int(row.get("customer_purchases", 0)),
 
-            "revenue": float(
-                row["customer_revenue"]
-            ),
+            "revenue": float(row.get("customer_revenue", 0)),
 
-            "average_order_value": float(
-                row["customer_avg_order_value"]
-            ),
+            "average_order_value": float(row.get("customer_avg_order_value", 0)),
 
-            "average_discount": float(
-                row["customer_avg_discount"]
-            ),
+            "average_discount": float(row.get("customer_avg_discount", 0)),
 
-            "purchase_rate": float(
-                row["customer_purchase_rate"]
-            ),
+            "purchase_rate": float(row.get("customer_purchase_rate", 0)),
 
-            "cart_rate": float(
-                row["customer_cart_rate"]
-            ),
+            "cart_rate": float(row.get("customer_cart_rate", 0)),
 
-            "abandonment_rate": float(
-                row["customer_abandonment_rate"]
-            ),
+            "abandonment_rate": float(row.get("customer_abandonment_rate", 0)),
 
-            "average_session_time": float(
-                row["customer_avg_session_time"]
-            ),
+            "average_session_time": float(row.get("customer_avg_session_time", 0)),
 
-            "average_pages": float(
-                row["customer_avg_pages"]
-            ),
+            "average_pages": float(row.get("customer_avg_pages", 0)),
 
-            "preferred_category": (
-                None
-                if pd.isna(
-                    row["preferred_category"]
-                )
-                else int(
-                    row["preferred_category"]
-                )
-            ),
+            "preferred_category": row.get("preferred_category"),
 
-            "customer_affinity_score": float(
-                row["customer_affinity_score"]
-            ),
+            "customer_affinity_score": float(row.get("customer_affinity_score", 0.5)),
 
-            "customer_buying_confidence": float(
-                row["customer_buying_confidence"]
-            ),
+            "customer_buying_confidence": float(row.get("customer_buying_confidence", 0.5)),
 
-            "discount_dependence_score": float(
-                row["discount_dependence_score"]
-            )
+            "discount_dependence_score": float(row.get("discount_dependence_score", 0.25))
         }
 
     def minmax(self, series):

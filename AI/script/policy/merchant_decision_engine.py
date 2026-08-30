@@ -3,6 +3,9 @@ from pathlib import Path
 
 import pandas as pd
 from script.agents.schemas import MerchantDecision
+from script.database.repositories.merchant_decision_repository import (
+    MerchantDecisionRepository
+)
 
 
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -207,6 +210,7 @@ def decide_action(row, policy):
 class MerchantDecisionEngine:
     def __init__(self, policy_path=POLICY_PATH):
         self.policy = load_policy()
+        self.repository = MerchantDecisionRepository()
 
     def decide(
         self,
@@ -224,6 +228,20 @@ class MerchantDecisionEngine:
         }
 
         decision = decide_action(row, self.policy)
+
+        self.repository.create({
+            "product_id": product_id,
+            "purchase_opportunity_score": purchase_opportunity_score,
+            "discount_opportunity_score": discount_opportunity_score,
+            "product_price": product_price,
+            "merchant_action": decision["merchant_action"],
+            "approved_discount_percent": decision[
+                "approved_discount_percent"
+            ],
+            "negotiation_allowed": decision["negotiation_allowed"],
+            "approval_status": decision["approval_status"],
+            "decision_reasons": decision.get("decision_reasons", []),
+        })
 
         return MerchantDecision(
             merchant_action=decision["merchant_action"],

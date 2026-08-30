@@ -9,12 +9,18 @@ from google import genai
 from google.genai import types
 
 
-SCRIPT_DIR = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
+SCRIPT_DIR = Path(__file__).resolve().parents[1]
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from schemas import BuyerIntent
+try:
+    from script.agents.schemas import BuyerIntent
+except ImportError:  # pragma: no cover
+    from schemas import BuyerIntent
 
 
 load_dotenv()

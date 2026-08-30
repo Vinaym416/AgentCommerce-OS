@@ -10,6 +10,7 @@ It does NOT execute payment.
 
 from dataclasses import dataclass
 from typing import Optional
+from uuid import uuid4
 
 
 # ============================================================
@@ -78,13 +79,27 @@ class CheckoutAgent:
                 reason="missing_product_id",
             )
 
+        try:
+            product_price = float(product_price)
+        except (TypeError, ValueError):
+            return CheckoutResult(
+                status="REJECTED",
+                product_id=product_id,
+                original_price=0.0,
+                discount_percent=0.0,
+                discount_amount=0.0,
+                final_price=0.0,
+                currency="INR",
+                payment_ready=False,
+                reason="invalid_product_price",
+            )
 
         if product_price <= 0:
 
             return CheckoutResult(
                 status="REJECTED",
                 product_id=product_id,
-                original_price=product_price,
+                original_price=round(product_price, 2),
                 discount_percent=0.0,
                 discount_amount=0.0,
                 final_price=0.0,
@@ -98,17 +113,20 @@ class CheckoutAgent:
         # DISCOUNT VALIDATION
         # ----------------------------------------------------
 
-        if discount_percent < 0:
-
+        try:
+            discount_percent = float(discount_percent)
+        except (TypeError, ValueError):
             discount_percent = 0.0
 
+        if discount_percent < 0:
+            discount_percent = 0.0
 
         if discount_percent > 100:
 
             return CheckoutResult(
                 status="REJECTED",
                 product_id=product_id,
-                original_price=product_price,
+                original_price=round(product_price, 2),
                 discount_percent=discount_percent,
                 discount_amount=0.0,
                 final_price=product_price,
@@ -177,6 +195,80 @@ class CheckoutAgent:
             reason="checkout_prepared_successfully",
         )
 
+    # ========================================================
+    # CREATE CHECKOUT SESSION
+    # ========================================================
+
+    def create_checkout(
+        self,
+        *,
+        customer_id: Optional[int],
+        product: dict,
+        quantity: int = 1,
+        discount_percent: float = 0.0,
+    ) -> dict:
+
+        if not product:
+            raise ValueError("Product is required for checkout.")
+
+        if quantity < 1:
+            raise ValueError("Quantity must be at least 1.")
+
+        product_id = product.get("product_id")
+        price = product.get("price")
+
+        if product_id is None:
+            raise ValueError("Product ID is required.")
+
+        if price is None:
+            raise ValueError("Product price is required.")
+
+        try:
+            price = float(price)
+        except (TypeError, ValueError):
+            raise ValueError("Product price must be numeric.")
+
+        if price <= 0:
+            raise ValueError("Product price must be greater than zero.")
+
+        try:
+            discount_percent = float(discount_percent)
+        except (TypeError, ValueError):
+            discount_percent = 0.0
+
+        if discount_percent < 0:
+            discount_percent = 0.0
+
+        if discount_percent > 100:
+            discount_percent = 100.0
+
+        subtotal = price * quantity
+        discount_amount = subtotal * discount_percent / 100.0
+        final_price = subtotal - discount_amount
+
+        subtotal = round(subtotal, 2)
+        discount_amount = round(discount_amount, 2)
+        final_price = round(final_price, 2)
+
+        checkout_id = f"checkout_{uuid4().hex[:12]}"
+
+        return {
+            "checkout_id": checkout_id,
+            "customer_id": customer_id,
+            "product_id": product_id,
+            "quantity": quantity,
+            "currency": "INR",
+            "unit_price": round(price, 2),
+            "subtotal": subtotal,
+            "discount_percent": round(discount_percent, 2),
+            "discount_amount": discount_amount,
+            "final_price": final_price,
+            "status": "READY_FOR_PAYMENT",
+            "payment_required": True,
+            "payment_executed": False,
+            "order_created": False,
+        }
+
 
 # ============================================================
 # CLI TEST
@@ -192,9 +284,7 @@ def main():
 
     print("=" * 80)
 
-
     agent = CheckoutAgent()
-
 
     tests = [
 
@@ -224,7 +314,6 @@ def main():
 
     ]
 
-
     for test in tests:
 
         print("\n")
@@ -237,16 +326,11 @@ def main():
 
         print(test)
 
-
         result = agent.prepare_checkout(
-
             product_id=test["product_id"],
-
             product_price=test["price"],
-
             discount_percent=test["discount"],
         )
-
 
         print("\n")
 
