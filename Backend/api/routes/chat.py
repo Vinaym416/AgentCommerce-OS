@@ -6,8 +6,6 @@ from script.agents.commerce_agent import CommerceAgent
 
 router = APIRouter(tags=["Commerce"])
 
-commerce_agent = CommerceAgent()
-
 
 class ChatRequest(BaseModel):
     message: str
@@ -34,7 +32,8 @@ class ChatResponse(BaseModel):
 def chat(request: ChatRequest):
 
     try:
-        result = commerce_agent.process(
+        agent = CommerceAgent()
+        result = agent.process(
             message=request.message,
             customer_id=request.customer_id,
             product_id=request.product_id,

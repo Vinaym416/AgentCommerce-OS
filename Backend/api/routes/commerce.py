@@ -109,9 +109,14 @@ def get_commerce_session(
         }
 
     product_id = int(product.get("product_id", product_id))
-    original_price = float(product.get("current_price") or product.get("price") or 784.23)
-    discount_percent = 10.0
-    final_price = round(original_price * (1 - (discount_percent / 100.0)), 2)
+    if transaction:
+        original_price = float(transaction.original_price)
+        discount_percent = float(transaction.discount_percent)
+        final_price = float(transaction.final_price)
+    else:
+        original_price = float(product.get("current_price") or product.get("price") or 784.23)
+        discount_percent = 10.0
+        final_price = round(original_price * (1 - (discount_percent / 100.0)), 2)
 
     resolved_transaction_id = (
         transaction.transaction_id

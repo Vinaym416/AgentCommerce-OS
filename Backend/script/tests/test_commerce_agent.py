@@ -121,6 +121,45 @@ def process(
 # 1. BASIC CUSTOMER-AWARE REQUEST
 # ============================================================
 
+def test_product_selection_resets_on_new_search():
+    from script.context.agent_memory import AgentMemory
+
+    memory = AgentMemory()
+    memory.set_customer(5176)
+
+    class DummyProduct:
+        product_id = 101
+
+    memory.set_products([DummyProduct(), DummyProduct()], customer_id=5176)
+    assert memory.get_selected_product(5176).product_id == 101
+
+    memory.reset_product_selection(customer_id=5176)
+    assert memory.get_selected_product(5176) is None
+
+
+def test_explicit_product_selection_bypasses_full_list_recommendation():
+    from types import SimpleNamespace
+
+    agent = create_agent()
+    agent.memory.set_customer(CUSTOMER_ID)
+    agent.memory.set_products(
+        [
+            SimpleNamespace(product_id=100, product_name="Alpha", category_name="Phone", availability=True, currency="INR", current_price=1000, rating=4.0, conversion_rate=1.0, demand_score=1.0, quality_score=1.0, product_score=1.0),
+            SimpleNamespace(product_id=200, product_name="Beta", category_name="Phone", availability=True, currency="INR", current_price=2000, rating=4.0, conversion_rate=1.0, demand_score=1.0, quality_score=1.0, product_score=1.0),
+        ],
+        customer_id=CUSTOMER_ID,
+    )
+
+    result = agent.process(
+        message="I want product 200.",
+        customer_id=CUSTOMER_ID,
+        product_id=200,
+    )
+
+    assert result["products"][0]["product_id"] == 200
+    assert len(result["products"]) == 1
+
+
 def test_basic_request():
 
     agent = create_agent()

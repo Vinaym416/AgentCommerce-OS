@@ -14,6 +14,12 @@ export default function Checkout() {
 
   useEffect(() => {
     const loadSession = async () => {
+      if (!transactionId) {
+        setStatus("This checkout offer has expired or is missing its transaction ID.");
+        setSessionLoading(false);
+        return;
+      }
+
       try {
         setSessionLoading(true);
         const query = transactionId
@@ -36,7 +42,7 @@ export default function Checkout() {
     };
 
     loadSession();
-  }, []);
+  }, [transactionId]);
 
   const product = session?.product || { product_id: 453, name: "Premium Product" };
   const customer = session?.customer || { customer_id: 5176 };
@@ -87,14 +93,14 @@ export default function Checkout() {
         );
       }
 
-      const transactionId = data.transactionId || session.transaction_id;
-      if (!transactionId) {
+      const paymentTransactionId = data.transactionId || session.transaction_id;
+      if (!paymentTransactionId) {
         throw new Error(
           "Server did not return transaction_id. Payment cannot proceed securely."
         );
       }
-      
-      console.log("Transaction ID:", transactionId);
+
+      console.log("Transaction ID:", paymentTransactionId);
 
       // ------------------------------------------------------
       // 2. CHECK RAZORPAY SDK
@@ -147,7 +153,7 @@ export default function Checkout() {
                   // SECURITY: Send transaction_id and payment details only.
                   // Backend resolves the real Razorpay order_id from MongoDB.
                   // ================================================
-                  transaction_id: transactionId,
+                  transaction_id: paymentTransactionId,
                   razorpay_payment_id: paymentResponse.razorpay_payment_id,
                   razorpay_signature: paymentResponse.razorpay_signature,
                 }),
@@ -331,7 +337,7 @@ export default function Checkout() {
                 </span>
 
                 <span className="text-slate-300 line-through">
-                  ₹784.23
+                  ₹{originalPrice.toFixed(2)}
                 </span>
 
               </div>
@@ -354,7 +360,7 @@ export default function Checkout() {
                   </p>
 
                   <p className="mt-1 text-4xl font-bold">
-                    ₹705.81
+                    ₹{finalPrice.toFixed(2)}
                   </p>
                 </div>
                 <span className="mb-1 text-sm text-slate-500">INR</span>

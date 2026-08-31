@@ -1413,6 +1413,7 @@ to CommerceExecutionAgent. No direct payment handling.
 
 import json
 import sys
+import pandas as pd
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -1432,6 +1433,7 @@ if str(ROOT) not in sys.path:
 # ============================================================
 
 from script.agents.buyer_agent import BuyerAgent
+from script.agents.gemini_buyer_agent import GeminiBuyerAgent
 from script.agents.schemas import ProductCandidate
 from script.agents.negotiation_agent import NegotiationAgent
 from script.agents.commerce_execution_agent import CommerceExecutionAgent
@@ -1471,25 +1473,41 @@ class CommerceAgent:
             "Initializing AgentCommerce OS..."
         )
 
-        self.buyer_agent = BuyerAgent()
+        try:
+            self.buyer_agent = GeminiBuyerAgent()
+            self.fallback_buyer_agent = BuyerAgent()
+            print("BuyerAgent initialized with Gemini primary model.")
+        except Exception as exc:
+            self.buyer_agent = BuyerAgent()
+            self.fallback_buyer_agent = None
+            print(f"Gemini buyer agent unavailable, falling back to local model: {exc}")
 
         self.product_retriever = ProductRetriever()
+        print("ProductRetriever initialized.")
 
         self.customer_context = CustomerContext()
+        print("CustomerContext initialized.")
 
         self.opportunity_engine = OpportunityEngine()
+        print("OpportunityEngine initialized.")
 
         self.merchant_engine = MerchantDecisionEngine()
+        print("MerchantDecisionEngine initialized.")
 
         self.negotiation_agent = NegotiationAgent()
+        print("NegotiationAgent initialized.")
 
         self.execution_agent = CommerceExecutionAgent()
+        print("CommerceExecutionAgent initialized.")
 
         self.transaction_manager = TransactionManager()
+        print("TransactionManager initialized.")
 
         self.policy_engine = PolicyEngine()
+        print("PolicyEngine initialized.")
 
         self.memory = AgentMemory()
+        print("AgentMemory initialized.")
 
         print(
             "All agent tools initialized."
@@ -1519,6 +1537,17 @@ class CommerceAgent:
 
         if customer_id is not None:
             self.memory.set_message(message, customer_id)
+
+        is_new_search = (
+            customer_id is not None
+            and product_id is None
+            and not self._is_product_reference(message)
+            and not self._is_price_followup(message)
+            and not self._is_acceptance_message(message)
+        )
+
+        if is_new_search:
+            self.memory.reset_product_selection(customer_id)
 
         transaction = None
         if transaction_id:
@@ -1557,15 +1586,18 @@ class CommerceAgent:
             "CUSTOMER_CONTEXT"
         )
 
+        print("CustomerContext processing request...")
         customer = (
             self.customer_context.get_customer(
                 customer_id
             )
         )
         customer = self.customer_context.get_customer(customer_id)
+        print(f"CustomerContext processed: customer_id={customer_id}, customer={customer}")
 
         if customer is None:
             trace.append("ANONYMOUS_CUSTOMER")
+            print("CustomerContext: anonymous customer detected.")
 
         # ----------------------------------------------------
         # 2. BUYER AGENT
@@ -1575,11 +1607,19 @@ class CommerceAgent:
             "BUYER_AGENT"
         )
 
-        intent = (
-            self.buyer_agent.analyze(
-                message
-            )
-        )
+        print("BuyerAgent processing customer message...")
+        try:
+            intent = self.buyer_agent.extract_intent(message)
+            print("BuyerAgent processed with GEMINI response.")
+        except Exception as exc:
+            if self.fallback_buyer_agent is not None:
+                print(f"BuyerAgent Gemini failed, using local fallback: {exc}")
+                intent = self.fallback_buyer_agent.analyze(message)
+                print("BuyerAgent processed with LOCAL FALLBACK response.")
+            else:
+                raise
+
+        print(f"BuyerAgent output: intent={intent.intent}, budget={intent.budget}, discount_requested={intent.discount_requested}, max_discount_requested={intent.max_discount_requested}")
 
         if customer_id is not None:
             self.memory.set_intent(intent, customer_id)
@@ -1592,26 +1632,39 @@ class CommerceAgent:
             "PRODUCT_RETRIEVER"
         )
 
-        selected_product = (
-            self.memory.get_selected_product(customer_id)
-            if customer_id is not None
-            else None
+        print("ProductRetriever processing product options...")
+        is_explicit_product_request = (
+            product_id is not None
+            or self._is_product_reference(message)
+            or self._is_price_followup(message)
         )
 
-        if product_id is not None and customer_id is not None:
+        selected_product = None
+        if customer_id is not None and is_explicit_product_request:
+            selected_product = self.memory.get_selected_product(customer_id)
+
+        if product_id is not None:
             selected_product = next(
                 (
                     product
                     for product in self.memory.get_products(customer_id)
                     if int(product.product_id) == int(product_id)
                 ),
-                selected_product,
-            )
-            if selected_product is not None:
-                self.memory.select_product(
-                    self.memory.get_products(customer_id).index(selected_product),
-                    customer_id,
+                None,
+            ) if customer_id is not None else None
+
+            if selected_product is None:
+                product_row = self.product_retriever.get_by_product_id(product_id)
+                selected_product = (
+                    self._rows_to_products(pd.DataFrame([product_row]))[0]
+                    if product_row is not None
+                    else None
                 )
+
+            if selected_product is not None:
+                if customer_id is not None:
+                    self.memory.set_products([selected_product], customer_id)
+                    self.memory.select_product(0, customer_id)
 
         price_followup = (
             customer_id is not None
@@ -1625,9 +1678,24 @@ class CommerceAgent:
             else None
         )
 
-        if referenced_product or price_followup:
+        explicit_product_selection = (
+            product_id is not None and selected_product is not None
+        )
+
+        if referenced_product or price_followup or explicit_product_selection:
             trace.append("AGENT_MEMORY")
-            products = [referenced_product or selected_product]
+            resolved_product = (
+                selected_product
+                if product_id is not None
+                else referenced_product or selected_product
+            )
+            products = [resolved_product] if resolved_product is not None else []
+            if customer_id is not None and resolved_product is not None:
+                self.memory.set_products(products, customer_id)
+                self.memory.select_product(
+                    self.memory.get_products(customer_id).index(resolved_product),
+                    customer_id,
+                )
 
         else:
             product_rows = (
@@ -1640,6 +1708,8 @@ class CommerceAgent:
             products = self._rows_to_products(
                 product_rows
             )
+
+            print(f"ProductRetriever processed: budget={intent.budget}, products_found={len(products)}")
 
             if customer_id is not None:
                 self.memory.set_products(products, customer_id)
@@ -1684,6 +1754,7 @@ class CommerceAgent:
             "OPPORTUNITY_ENGINE"
         )
 
+        print("OpportunityEngine processing purchase score and discount score...")
         intelligence = (
             self.opportunity_engine.calculate(
                 intent=intent,
@@ -1704,6 +1775,8 @@ class CommerceAgent:
             ]
         )
 
+        print(f"OpportunityEngine processed: purchase_score={purchase_score}, discount_score={discount_score}, top_product={top_product.product_id}")
+
         if (
             selected_product is not None
             and (
@@ -1723,6 +1796,7 @@ class CommerceAgent:
             "MERCHANT_DECISION_ENGINE"
         )
 
+        print("MerchantDecisionEngine deciding offer...")
         merchant_decision = (
             self.merchant_engine.decide(
 
@@ -1747,6 +1821,8 @@ class CommerceAgent:
         if customer_id is not None:
             self.memory.set_merchant_decision(merchant_decision, customer_id)
 
+        print(f"MerchantDecisionEngine decided: action={merchant_decision.merchant_action}, approved_discount_percent={merchant_decision.approved_discount_percent}, negotiation_allowed={merchant_decision.negotiation_allowed}")
+
         # ----------------------------------------------------
         # 7. NEGOTIATION AGENT
         # ----------------------------------------------------
@@ -1761,6 +1837,7 @@ class CommerceAgent:
             "NEGOTIATION_AGENT"
         )
 
+        print("NegotiationAgent negotiating discount...")
         negotiation = self.negotiation_agent.negotiate(
             requested_discount=(
                 intent.max_discount_requested
@@ -1778,6 +1855,8 @@ class CommerceAgent:
 
         if customer_id is not None:
             self.memory.set_negotiation_result(negotiation, customer_id)
+
+        print(f"NegotiationAgent negotiated: requested_discount={negotiation.requested_discount}, offered_discount={negotiation.offered_discount}, counter_offer={negotiation.counter_offer}")
 
         # ----------------------------------------------------
         # 8. DETERMINE WHETHER DISCOUNT ACTION IS NEEDED
@@ -1857,6 +1936,7 @@ class CommerceAgent:
             "POLICY_ENGINE"
         )
 
+        print("PolicyEngine applying policy rules...")
         requested_discount = negotiation.offered_discount
 
         policy_result = (
@@ -1879,6 +1959,8 @@ class CommerceAgent:
         if customer_id is not None:
             self.memory.set_policy_result(policy_result, customer_id)
 
+        print(f"PolicyEngine applied policy: allowed={policy_result.get('allowed')}, approved_discount_percent={policy_result.get('approved_discount_percent')}, final_price={policy_result.get('final_price')}")
+
         # ----------------------------------------------------
         # 9. FINAL ACTION
         # ----------------------------------------------------
@@ -1887,6 +1969,7 @@ class CommerceAgent:
             "FINAL_DECISION"
         )
 
+        print("Final decision being produced...")
         final_action = (
             self._commercial_action(
                 intent=intent,
@@ -1908,7 +1991,7 @@ class CommerceAgent:
         payment = None
         order = None
 
-        if final_action in {"OFFER_REQUESTED", "COUNTER_OFFER"}:
+        if final_action in {"OFFER_REQUESTED", "COUNTER_OFFER", "NEGOTIATE"}:
             transaction_status = (
                 TransactionState.COUNTER_OFFERED
                 if final_action == "COUNTER_OFFER"
@@ -1948,7 +2031,9 @@ class CommerceAgent:
         # 11. DELEGATE EXECUTION TO COMMERCE EXECUTION AGENT
         # ----------------------------------------------------
 
-        if final_action in {"OFFER_REQUESTED", "COUNTER_OFFER"}:
+        print(f"Final decision: {final_action}")
+
+        if final_action in {"OFFER_REQUESTED", "COUNTER_OFFER", "NEGOTIATE"}:
             return self._build_response(
                 intent=intent,
                 customer=customer,
@@ -2623,6 +2708,12 @@ class CommerceAgent:
         }:
             result["offer"] = {
                 "product_id": products[0].product_id,
+                "transaction_id": (
+                    current_transaction.transaction_id
+                    if current_transaction
+                    and current_transaction.product_id == products[0].product_id
+                    else None
+                ),
                 "name": products[0].product_name,
                 "category": products[0].category_name,
                 "original_price": round(products[0].current_price, 2),

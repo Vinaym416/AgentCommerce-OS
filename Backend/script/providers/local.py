@@ -1,6 +1,12 @@
 import os
 
-from openai import OpenAI
+try:
+    from openai import OpenAI
+except ImportError as exc:
+    raise ImportError(
+        "The OpenAI SDK is missing or too old. Install a compatible version with: "
+        "pip install 'openai>=1.0.0,<2'"
+    ) from exc
 
 
 def get_local_client() -> OpenAI:

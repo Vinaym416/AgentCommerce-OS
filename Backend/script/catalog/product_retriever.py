@@ -32,6 +32,10 @@ class ProductRetriever:
 
         return pd.DataFrame(products)
 
+    def get_by_product_id(self, product_id):
+        """Retrieve one product without applying recommendation ranking."""
+        return self.repository.get_by_product_id(int(product_id))
+
     # --------------------------------------------------------
     # Display results
     # --------------------------------------------------------

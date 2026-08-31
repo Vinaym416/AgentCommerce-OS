@@ -1,28 +1,109 @@
-from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Optional, Literal
+
+try:
+    from pydantic import BaseModel, Field, ConfigDict
+except ImportError:  # pragma: no cover
+    BaseModel = object
+    ConfigDict = None
+    Field = lambda *args, **kwargs: None
 
 
 # ============================================================
 # BUYER INTENT
 # ============================================================
 
-@dataclass
-class BuyerIntent:
-    intent: str
+if ConfigDict is not None:
+    class BuyerIntent(BaseModel):
+        model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
-    budget: Optional[float] = None
+        intent: str = "PRODUCT_SEARCH"
+        budget_min: Optional[float] = 0.0
+        budget_max: Optional[float] = None
+        currency: str = "INR"
+        product_category: str = "general"
+        discount_requested: bool = False
+        discount_value: Optional[float] = None
+        urgency: Literal["low", "medium", "high"] = "medium"
+        confidence_score: float = 0.0
 
-    urgency: str = "normal"
+        product_preferences: List[str] = Field(default_factory=list)
+        constraints: List[str] = Field(default_factory=list)
 
-    discount_requested: bool = False
+        @property
+        def budget(self) -> Optional[float]:
+            return self.budget_max
 
-    max_discount_requested: Optional[float] = None
+        @budget.setter
+        def budget(self, value):
+            self.budget_max = value
 
-    product_preferences: List[str] = field(default_factory=list)
+        @property
+        def max_discount_requested(self) -> Optional[float]:
+            return self.discount_value
 
-    constraints: List[str] = field(default_factory=list)
+        @max_discount_requested.setter
+        def max_discount_requested(self, value):
+            self.discount_value = value
 
-    confidence: float = 0.0
+        @property
+        def confidence(self) -> float:
+            return self.confidence_score
+
+        @confidence.setter
+        def confidence(self, value):
+            self.confidence_score = value
+
+        @property
+        def urgency_level(self) -> str:
+            return self.urgency
+
+        def model_dump(self, *args, **kwargs):
+            return super().model_dump(*args, **kwargs)
+
+else:
+    class BuyerIntent(BaseModel):
+        intent: str = "PRODUCT_SEARCH"
+        budget_min: Optional[float] = 0.0
+        budget_max: Optional[float] = None
+        currency: str = "INR"
+        product_category: str = "general"
+        discount_requested: bool = False
+        discount_value: Optional[float] = None
+        urgency: str = "medium"
+        confidence_score: float = 0.0
+
+        product_preferences: List[str] = []
+        constraints: List[str] = []
+
+        class Config:
+            extra = "ignore"
+
+        @property
+        def budget(self) -> Optional[float]:
+            return self.budget_max
+
+        @budget.setter
+        def budget(self, value):
+            self.budget_max = value
+
+        @property
+        def max_discount_requested(self) -> Optional[float]:
+            return self.discount_value
+
+        @max_discount_requested.setter
+        def max_discount_requested(self, value):
+            self.discount_value = value
+
+        @property
+        def confidence(self) -> float:
+            return self.confidence_score
+
+        @confidence.setter
+        def confidence(self, value):
+            self.confidence_score = value
+
+        def model_dump(self, *args, **kwargs):
+            return self.__dict__.copy()
 
 
 # ============================================================

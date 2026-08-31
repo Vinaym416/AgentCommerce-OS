@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { sendCommerceMessage } from "../lib/api";
 import AgentResponse from "../components/commerce/AgentResponse";
@@ -14,10 +14,15 @@ const WELCOME_MESSAGE = {
 
 export default function Chat() {
   const navigate = useNavigate();
+  const messagesEndRef = useRef(null);
 
   const [messages, setMessages] = useState([WELCOME_MESSAGE]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages, loading]);
 
   const suggestions = [
     "Find me a smartphone under ₹25,000",
@@ -82,24 +87,52 @@ export default function Chat() {
 
   function handleAction(action, product, data) {
     const transactionId =
-      data?.transaction?.transaction_id ||
-      data?.offer?.transaction_id;
+      data?.offer?.transaction_id ||
+      data?.transaction?.transaction_id;
+
+    const currentProduct =
+      product && (product.product_id || product.id)
+        ? product
+        : data?.product && (data.product.product_id || data.product.id)
+          ? data.product
+          : data?.products?.find(
+              (candidate) =>
+                Number(candidate?.product_id ?? candidate?.id) === Number(data?.product_id ?? data?.transaction?.product_id ?? data?.offer?.product_id)
+            ) ||
+            data?.products?.[0] ||
+            null;
 
     const productId =
-      product?.product_id ||
+      currentProduct?.product_id ??
+      currentProduct?.id ??
+      data?.product_id ??
+      data?.transaction?.product_id ??
       data?.offer?.product_id;
 
     /*
      * USER SELECTS PRODUCT
      */
     if (action === "select_product") {
-      handleSend(
-        `I want product ${productId}.`,
+      setMessages((prev) => [
+        ...prev,
         {
-          product_id: productId,
-          transaction_id: transactionId,
-        }
-      );
+          role: "assistant",
+          text: "Great choice. Here is the product details.",
+          data: {
+            ...data,
+            action: "VIEW_PRODUCT",
+            product: product,
+            product_id: productId,
+            transaction: transactionId
+              ? {
+                  transaction_id: transactionId,
+                  product_id: productId,
+                }
+              : undefined,
+            message: "Great choice. Here's the product you're interested in.",
+          },
+        },
+      ]);
 
       return;
     }
@@ -123,13 +156,13 @@ export default function Chat() {
      * USER ACCEPTS NEGOTIATED OFFER
      */
     if (action === "accept_offer") {
-      handleSend(
-        "Yes, I'll take the offer.",
-        {
-          product_id: productId,
-          transaction_id: transactionId,
-        }
-      );
+      navigate("/checkout", {
+        state: {
+          transactionId,
+          productId,
+          commerceData: data,
+        },
+      });
 
       return;
     }
@@ -326,6 +359,8 @@ export default function Chat() {
                 onAction={handleAction}
               />
             ))}
+
+            <div ref={messagesEndRef} />
 
             {loading && (
               <div className="mb-8 flex gap-4">

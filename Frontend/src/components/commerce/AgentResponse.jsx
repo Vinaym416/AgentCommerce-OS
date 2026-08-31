@@ -1,25 +1,50 @@
+import { useEffect, useState } from "react";
 import ProductCard from "../ProductCard";
+
+const PAGE_SIZE = 20;
 
 export default function AgentResponse({ data, onAction }) {
   const action = data?.action || data?.final_action;
-  const products = data?.products || [];
+  const products = Array.isArray(data?.products) ? data.products : [];
   const offer = data?.offer || {};
   const offerAvailable = Boolean(
     offer &&
       (offer.final_price != null || offer.amount != null || offer.original_price != null)
   );
-  const selectedProduct = data?.product || offer || products[0];
-  const isSelectedProduct = Boolean(
-    selectedProduct &&
-      data?.transaction?.product_id &&
-      Number(data.transaction.product_id) === Number(selectedProduct.product_id)
-  );
 
-  if (
+  const explicitProductDetail =
     action === "PRODUCT_SELECTED" ||
     action === "PRODUCT_DETAIL" ||
-    (action === "RECOMMEND_PRODUCT" && isSelectedProduct)
-  ) {
+    action === "VIEW_PRODUCT" ||
+    action === "select_product" ||
+    Boolean(data?.product) ||
+    (data?.product_id != null && products.length === 1);
+
+  const requestedProductId =
+    data?.product_id ??
+    data?.transaction?.product_id ??
+    data?.offer?.product_id;
+
+  const matchingProduct =
+    requestedProductId && products.length
+      ? products.find(
+          (product) =>
+            Number(product?.product_id ?? product?.id) === Number(requestedProductId)
+        )
+      : null;
+
+  const selectedProduct =
+    data?.product ||
+    matchingProduct ||
+    (products.length ? products[0] : null) ||
+    offer ||
+    null;
+
+  const shouldShowSingleProductDetail =
+    explicitProductDetail ||
+    (!products.length && Boolean(selectedProduct));
+
+  if (shouldShowSingleProductDetail) {
     return <ProductDetail data={data} product={selectedProduct} onAction={onAction} />;
   }
 
@@ -58,35 +83,78 @@ export default function AgentResponse({ data, onAction }) {
     action === "OFFER_REQUESTED" ||
     products.length > 0
   ) {
-    return (
-      <div className="space-y-5">
-          <div>
-            <h3 className="text-base font-semibold text-white">
-              I found some products for you.
-            </h3>
-            <p className="mt-1 text-xs text-slate-500">
-              Compare the options below or choose one and I'll help you negotiate the price.
-            </p>
-          </div>
-        <div className="grid gap-4 md:grid-cols-2">
-          {products.map((product, index) => (
-            <ProductCard
-              key={product.product_id || product.id || index}
-              product={product}
-              data={data}
-              onAction={onAction}
-            />
-          ))}
-        </div>
-      </div>
-    );
+    return <ProductList products={products} data={data} onAction={onAction} />;
   }
 
   return <p className="text-slate-300">{data?.message || "I processed your request."}</p>;
 }
 
+function ProductList({ products, data, onAction }) {
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+  }, [products.length]);
+
+  useEffect(() => {
+    const handleScroll = () => {
+      const scrollPosition = window.innerHeight + window.scrollY;
+      const scrollThreshold = document.body.offsetHeight - 180;
+
+      if (scrollPosition >= scrollThreshold && visibleCount < products.length) {
+        setVisibleCount((count) => Math.min(count + PAGE_SIZE, products.length));
+      }
+    };
+
+    window.addEventListener("scroll", handleScroll);
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, [visibleCount, products.length]);
+
+  const visibleProducts = products.slice(0, visibleCount);
+  const hasMore = visibleCount < products.length;
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <h3 className="text-base font-semibold text-white">
+          I found some products for you.
+        </h3>
+        <p className="mt-1 text-xs text-slate-500">
+          Showing {visibleProducts.length} of {products.length}. Scroll to load more.
+        </p>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2">
+        {visibleProducts.map((product, index) => (
+          <ProductCard
+            key={product.product_id || product.id || index}
+            product={product}
+            data={data}
+            onAction={onAction}
+          />
+        ))}
+      </div>
+
+      {hasMore && (
+        <div className="flex justify-center pt-2">
+          <button
+            onClick={() => setVisibleCount((count) => Math.min(count + PAGE_SIZE, products.length))}
+            className="rounded-xl border border-slate-700 bg-slate-900 px-4 py-2 text-xs font-medium text-slate-300 hover:bg-slate-800"
+          >
+            Load more products
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ProductDetail({ data, product, onAction }) {
-  const productId = product?.product_id || data?.offer?.product_id;
+  const productId =
+    product?.product_id ??
+    data?.product_id ??
+    data?.transaction?.product_id ??
+    data?.offer?.product_id;
   const offer = data?.offer || {};
   const price = Number(
     product?.final_price ??
@@ -132,10 +200,19 @@ function ProductDetail({ data, product, onAction }) {
 
 function NegotiationResponse({ data, onAction }) {
   const offer = data?.offer || {};
+  const currentProduct =
+    data?.product ||
+    data?.products?.find(
+      (product) =>
+        Number(product?.product_id ?? product?.id) === Number(data?.product_id ?? data?.transaction?.product_id ?? data?.offer?.product_id)
+    ) ||
+    data?.products?.[0] ||
+    {};
+
   const product = {
-    product_id: offer.product_id || data?.products?.[0]?.product_id,
-    name: offer.name || data?.products?.[0]?.name || data?.products?.[0]?.product_name,
-    category: offer.category || data?.products?.[0]?.category || data?.products?.[0]?.category_name,
+    product_id: currentProduct.product_id ?? currentProduct.id ?? offer.product_id ?? data?.product_id ?? data?.transaction?.product_id,
+    name: currentProduct.name || currentProduct.product_name || offer.name || data?.products?.[0]?.name || data?.products?.[0]?.product_name,
+    category: currentProduct.category || currentProduct.category_name || offer.category || data?.products?.[0]?.category || data?.products?.[0]?.category_name,
   };
   const original = Number(offer.original_price ?? data?.products?.[0]?.price ?? data?.products?.[0]?.current_price ?? 0);
   const negotiated = Number(offer.final_price ?? offer.amount ?? original);

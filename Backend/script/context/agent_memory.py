@@ -186,6 +186,15 @@ class AgentMemory:
         if customer_id in self.scopes:
             del self.scopes[customer_id]
 
+    def reset_product_selection(self, customer_id=None):
+        """Clear the last product selection for a fresh search."""
+        scope = self._get_scope(customer_id)
+        scope.last_products = []
+        scope.selected_product = None
+        if customer_id is None:
+            self.last_products = []
+            self.selected_product = None
+
     def snapshot(self, customer_id=None):
         scope = self._get_scope(customer_id)
         selected = scope.selected_product

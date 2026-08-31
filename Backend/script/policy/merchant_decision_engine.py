@@ -144,10 +144,7 @@ def decide_action(row, policy):
             "moderate_discount_opportunity"
         )
 
-        approved_discount = min(
-            10,
-            max_discount
-        )
+        approved_discount = max_discount
 
         return {
             "merchant_action": "LIMITED_OFFER",

@@ -40,42 +40,43 @@ class BuyerAgent:
         return """
 You are the Buyer Agent inside AgentCommerce OS.
 
-Convert the customer's message into structured shopping intent.
+Convert the customer's message into structured commercial intent.
 
-Return ONLY valid JSON:
+Return ONLY valid JSON matching this schema:
 
 {
-    "intent": "purchase | browse | compare | unclear",
-    "budget": number or null,
-    "urgency": "low | normal | high",
-    "discount_requested": true or false,
-    "max_discount_requested": number or null,
-    "product_preferences": [],
-    "constraints": [],
-    "confidence": number
+    "intent": "PRODUCT_SEARCH",
+    "budget_min": 0,
+    "budget_max": 2000,
+    "currency": "INR",
+    "product_category": "electronics",
+    "discount_requested": true,
+    "discount_value": 10,
+    "urgency": "medium",
+    "confidence_score": 0.95
 }
 
 Rules:
-- Extract the maximum stated budget.
-- "under ₹2000" means budget = 2000.
-- Extract discount requests accurately.
-- Never approve or promise discounts.
-- Do not invent preferences.
+- Use intent values like PRODUCT_SEARCH, NEGOTIATE, ACCEPT, CANCEL.
+- budget_max is the highest limit the customer mentions.
+- If the user asks for a discount, set discount_requested=true and discount_value to the offered percent.
+- Use urgency low|medium|high.
+- If no explicit budget is given, budget_max can be null.
 """
 
     def _fallback_intent(self, message: str) -> BuyerIntent:
         text = message.lower()
-        budget = None
+        budget_max = None
 
         for pattern in [
-            r"under\s*(?:inr|rs|₹)?\s*([0-9]+)",
-            r"budget\s*(?:is|under|of)?\s*(?:inr|rs|₹)?\s*([0-9]+)",
-            r"(?:<=|less than|under)\s*(?:inr|rs|₹)?\s*([0-9]+)",
+            r"under\s*(?:inr|rs|₹)?\s*([0-9][0-9,]*)",
+            r"budget\s*(?:is|under|of)?\s*(?:inr|rs|₹)?\s*([0-9][0-9,]*)",
+            r"(?:<=|less than|under)\s*(?:inr|rs|₹)?\s*([0-9][0-9,]*)",
         ]:
             import re
             match = re.search(pattern, text)
             if match:
-                budget = float(match.group(1))
+                budget_max = float(match.group(1).replace(",", ""))
                 break
 
         discount_requested = any(
@@ -102,7 +103,7 @@ Rules:
             ]
         )
 
-        max_discount_requested = None
+        discount_value = None
         for pattern in [
             r"(\d{1,2})\s*%",
             r"(\d{1,2})\s*percent",
@@ -110,25 +111,39 @@ Rules:
             import re
             matches = re.findall(pattern, text)
             if matches:
-                max_discount_requested = float(max(matches))
+                discount_value = float(max(matches))
                 break
 
         if "immediately" in text or "urgent" in text or "right now" in text:
             urgency = "high"
         elif "soon" in text or "asap" in text:
-            urgency = "normal"
+            urgency = "medium"
         else:
-            urgency = "normal"
+            urgency = "medium"
+
+        category = "electronics" if any(token in text for token in ["headphone", "headphones", "phone", "laptop", "speaker", "watch", "camera"]) else "general"
+
+        if budget_max is not None or "want" in text or "buy" in text or "need" in text:
+            intent = "PRODUCT_SEARCH"
+        elif "accept" in text or "buy it" in text or "take it" in text:
+            intent = "ACCEPT"
+        elif "cancel" in text or "stop" in text:
+            intent = "CANCEL"
+        else:
+            intent = "PRODUCT_SEARCH"
 
         return BuyerIntent(
-            intent="purchase" if budget is not None or "want" in text or "buy" in text else "browse",
-            budget=budget,
-            urgency=urgency,
+            intent=intent,
+            budget_min=0.0,
+            budget_max=budget_max,
+            currency="INR",
+            product_category=category,
             discount_requested=discount_requested,
-            max_discount_requested=max_discount_requested,
+            discount_value=discount_value,
+            urgency=urgency,
+            confidence_score=0.72,
             product_preferences=[],
-            constraints=[],
-            confidence=0.72,
+            constraints=[] if budget_max is None else [f"under ₹{int(budget_max)}"],
         )
 
     def analyze(self, message: str) -> BuyerIntent:
@@ -170,15 +185,31 @@ Rules:
         except json.JSONDecodeError:
             return self._fallback_intent(user_message)
 
-        confidence = parsed.get("confidence")
+        normalized = {
+            "intent": parsed.get("intent") or "PRODUCT_SEARCH",
+            "budget_min": parsed.get("budget_min", 0.0),
+            "budget_max": parsed.get("budget_max") or parsed.get("budget") or None,
+            "currency": parsed.get("currency") or "INR",
+            "product_category": parsed.get("product_category") or "general",
+            "discount_requested": bool(parsed.get("discount_requested")),
+            "discount_value": parsed.get("discount_value") or parsed.get("max_discount_requested") or None,
+            "urgency": parsed.get("urgency") or "medium",
+            "confidence_score": parsed.get("confidence_score") if parsed.get("confidence_score") is not None else parsed.get("confidence", 0.7),
+            "product_preferences": parsed.get("product_preferences") or [],
+            "constraints": parsed.get("constraints") or [],
+        }
 
+        confidence = normalized["confidence_score"]
         if isinstance(confidence, (int, float)) and confidence > 1:
             if confidence <= 100:
-                parsed["confidence"] = confidence / 100
+                normalized["confidence_score"] = confidence / 100
             else:
                 return self._fallback_intent(user_message)
 
-        return BuyerIntent(**parsed)
+        if not isinstance(normalized["confidence_score"], (int, float)):
+            normalized["confidence_score"] = 0.7
+
+        return BuyerIntent(**normalized)
 
     def extract_intent(self, user_message: str) -> BuyerIntent:
         return self.analyze(user_message)
