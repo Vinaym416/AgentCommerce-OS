@@ -6,6 +6,8 @@ import { API_BASE_URL } from "../lib/api";
 export default function Checkout() {
   const location = useLocation();
   const transactionId = location.state?.transactionId;
+  const requestedQuantity = Math.max(1, Number(location.state?.quantity ?? 1));
+  const acceptedOffer = location.state?.commerceData?.offer || {};
   const [loading, setLoading] = useState(false);
   const [sessionLoading, setSessionLoading] = useState(true);
   const [status, setStatus] = useState("");
@@ -23,7 +25,7 @@ export default function Checkout() {
       try {
         setSessionLoading(true);
         const query = transactionId
-          ? `?transaction_id=${encodeURIComponent(transactionId)}`
+          ? `?transaction_id=${encodeURIComponent(transactionId)}&quantity=${requestedQuantity}`
           : "";
         const response = await fetch(`${API_BASE_URL}/commerce/session/5176${query}`);
         const data = await response.json();
@@ -46,10 +48,29 @@ export default function Checkout() {
 
   const product = session?.product || { product_id: 453, name: "Premium Product" };
   const customer = session?.customer || { customer_id: 5176 };
-  const originalPrice = Number(session?.original_price ?? 784.23);
-  const discountPercent = Number(session?.discount ?? 10);
-  const finalPrice = Number(session?.final_price ?? 705.81);
+  const originalPrice = Number(
+    session?.original_price ??
+    acceptedOffer.original_price ??
+    784.23
+  );
+  const discountPercent = Number(
+    session?.discount ??
+    acceptedOffer.discount_percent ??
+    0
+  );
+  const finalPrice = Number(
+    session?.final_price ??
+    acceptedOffer.final_price ??
+    originalPrice * (1 - discountPercent / 100)
+  );
   const discountAmount = Number(session?.discount_amount ?? originalPrice - finalPrice);
+  const quantity = Math.max(1, Number(session?.quantity ?? requestedQuantity));
+  const totalFinalPrice = Number(
+    session?.total_final_price ?? finalPrice * quantity
+  );
+  const totalDiscountAmount = Number(
+    session?.total_discount_amount ?? discountAmount * quantity
+  );
 
   const handlePayment = async () => {
     if (!session) {
@@ -75,10 +96,11 @@ export default function Checkout() {
           },
           body: JSON.stringify({
             customer_id: customer.customer_id,
-            transaction_id: transactionId || session.transaction_id,
+            transaction_id: session.transaction_id || transactionId,
             product_id: product.product_id,
             product_price: originalPrice,
             discount_percent: discountPercent,
+            quantity,
           }),
         }
       );
@@ -203,6 +225,7 @@ export default function Checkout() {
         notes: {
           customer_id: String(customer.customer_id),
           product_id: String(product.product_id),
+          quantity: String(quantity),
           source: "AgentCommerce OS",
         },
 
@@ -414,18 +437,18 @@ export default function Checkout() {
                 </span>
 
                 <span>
-                  1
+                  {quantity}
                 </span>
               </div>
               <div className="flex justify-between text-sm">
                 <span className="text-slate-400">Discount</span>
-                <span className="text-emerald-400">- ₹{discountAmount.toFixed(2)}</span>
+                  <span className="text-emerald-400">- ₹{totalDiscountAmount.toFixed(2)}</span>
               </div>
 
               <div className="border-t border-white/10 pt-4">
                 <div className="flex items-center justify-between">
                   <span className="font-medium">Total</span>
-                  <span className="text-2xl font-bold">₹{finalPrice.toFixed(2)}</span>
+                  <span className="text-2xl font-bold">₹{totalFinalPrice.toFixed(2)}</span>
                 </div>
 
               </div>
@@ -440,7 +463,7 @@ export default function Checkout() {
                 disabled={loading}
                 className="w-full rounded-2xl bg-indigo-500 px-6 py-4 text-sm font-semibold text-white shadow-lg shadow-indigo-500/20 transition hover:bg-indigo-400 hover:shadow-indigo-500/30 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {loading ? "Creating Secure Order..." : `Pay ₹${finalPrice.toFixed(2)}`}
+                {loading ? "Creating Secure Order..." : `Pay ₹${totalFinalPrice.toFixed(2)}`}
               </button>
 
               {/* STATUS */}

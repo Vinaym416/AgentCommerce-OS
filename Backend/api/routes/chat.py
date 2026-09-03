@@ -3,15 +3,21 @@ from pydantic import BaseModel
 from typing import Optional, Any, Dict
 
 from script.agents.commerce_agent import CommerceAgent
+from script.context.chat_session_store import ChatSessionStore
 
 router = APIRouter(tags=["Commerce"])
+session_store = ChatSessionStore()
 
 
 class ChatRequest(BaseModel):
     message: str
+    session_id: Optional[str] = None
     customer_id: Optional[int] = None
     product_id: Optional[int] = None
     transaction_id: Optional[str] = None
+    quantity: int = 1
+    negotiation_requested: bool = False
+    button_action: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
@@ -28,6 +34,14 @@ class ChatResponse(BaseModel):
     trace: list = []
 
 
+@router.get("/chat/session/{session_id}")
+def get_chat_session(session_id: str):
+    session = session_store.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Chat session not found.")
+    return session
+
+
 @router.post("/chat")
 def chat(request: ChatRequest):
 
@@ -38,10 +52,12 @@ def chat(request: ChatRequest):
             customer_id=request.customer_id,
             product_id=request.product_id,
             transaction_id=request.transaction_id,
+            negotiation_requested=request.negotiation_requested,
+            button_action=request.button_action,
+            session_id=request.session_id,
             execute_payment=False,
         )
-
-        return {
+        response = {
             "success": True,
             "message": result.get("response")
             or result.get("message")
@@ -54,8 +70,17 @@ def chat(request: ChatRequest):
             "checkout": result.get("checkout"),
             "order": result.get("order"),
             "payment": result.get("payment"),
+            "customer_intent": result.get("customer_intent"),
             "trace": result.get("agent_trace") or result.get("trace", []),
         }
+        if request.session_id:
+            session_store.append_turn(
+                request.session_id,
+                request.customer_id,
+                request.model_dump(),
+                response,
+            )
+        return response
 
     except ValueError as exc:
         raise HTTPException(

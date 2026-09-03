@@ -25,8 +25,23 @@ from script.database.repositories.product_repository import (
     ProductRepository,
 )
 from script.transaction.transaction_manager import TransactionManager
+from script.context.chat_session_store import ChatSessionStore
+from pymongo.errors import PyMongoError
+import threading
 import json
 router = APIRouter()
+
+_execution_agent = None
+_execution_agent_lock = threading.Lock()
+
+
+def _get_execution_agent():
+    global _execution_agent
+    if _execution_agent is None:
+        with _execution_agent_lock:
+            if _execution_agent is None:
+                _execution_agent = CommerceExecutionAgent()
+    return _execution_agent
 
 
 # ============================================================
@@ -44,6 +59,8 @@ class CreatePaymentOrderRequest(BaseModel):
     product_price: float
 
     discount_percent: float = 0.0
+
+    quantity: int = 1
 
 
 class VerifyPaymentRequest(BaseModel):
@@ -72,18 +89,30 @@ class VerifyPaymentRequest(BaseModel):
 def get_commerce_session(
     customer_id: int,
     transaction_id: Optional[str] = None,
+    quantity: Optional[int] = None,
 ):
     """
     Return the server-generated offer for a customer/session.
     The frontend must consume this payload instead of hardcoding pricing.
     """
 
+    resolved_customer_id = int(customer_id)
+    local_context = (
+        ChatSessionStore().find_transaction_context(transaction_id)
+        if transaction_id
+        else None
+    )
+    local_transaction = (local_context or {}).get("transaction") or {}
+    local_offer = (local_context or {}).get("offer") or {}
+    local_product = (local_context or {}).get("product") or local_offer
+
     customer_repository = CustomerRepository()
     product_repository = ProductRepository()
 
-    resolved_customer_id = int(customer_id)
-
-    customer = customer_repository.get_by_customer_id(resolved_customer_id)
+    try:
+        customer = customer_repository.get_by_customer_id(resolved_customer_id)
+    except PyMongoError:
+        customer = None
     if customer is None:
         customer = {
             "customer_id": resolved_customer_id,
@@ -93,14 +122,25 @@ def get_commerce_session(
 
     transaction = None
     if transaction_id:
-        transaction = TransactionManager().get_by_transaction_id(transaction_id)
+        try:
+            transaction = TransactionManager().get_by_transaction_id(transaction_id)
+        except PyMongoError:
+            transaction = None
         if transaction and transaction.customer_id != resolved_customer_id:
             raise HTTPException(status_code=404, detail="Checkout transaction not found.")
 
-    product_id = transaction.product_id if transaction else 453
-    product = product_repository.get_by_product_id(product_id)
+    product_id = (
+        transaction.product_id if transaction
+        else local_transaction.get("product_id")
+        or local_product.get("product_id")
+        or 453
+    )
+    try:
+        product = product_repository.get_by_product_id(product_id)
+    except PyMongoError:
+        product = None
     if product is None:
-        product = {
+        product = local_product or {
             "product_id": 453,
             "name": "Premium Product",
             "current_price": 784.23,
@@ -110,10 +150,53 @@ def get_commerce_session(
 
     product_id = int(product.get("product_id", product_id))
     if transaction:
-        original_price = float(transaction.original_price)
+        requested_quantity = quantity
+        quantity = max(1, int(getattr(transaction, "quantity", 1) or 1))
+        if requested_quantity is not None:
+            if requested_quantity < 1:
+                raise HTTPException(status_code=400, detail="quantity must be at least 1")
+            quantity = requested_quantity
+        stored_original_price = float(transaction.original_price)
+        stored_final_price = float(transaction.final_price)
+        payment_started = transaction.status in {
+            "PAYMENT_PENDING",
+            "PAYMENT_AUTHORIZED",
+            "PAYMENT_CAPTURED",
+            "ORDER_CREATED",
+            "COMPLETED",
+        }
+        original_price = (
+            round(stored_original_price / quantity, 2)
+            if payment_started and getattr(transaction, "quantity", 1) > 1
+            else stored_original_price
+        )
         discount_percent = float(transaction.discount_percent)
-        final_price = float(transaction.final_price)
+        final_price = (
+            round(stored_final_price / max(1, int(getattr(transaction, "quantity", 1) or 1)), 2)
+            if payment_started and getattr(transaction, "quantity", 1) > 1
+            else stored_final_price
+        )
+    elif local_transaction:
+        quantity = max(1, int(local_transaction.get("quantity", quantity or 1) or 1))
+        original_price = float(
+            local_transaction.get("original_price")
+            or local_offer.get("original_price")
+            or product.get("current_price")
+            or product.get("price")
+            or 784.23
+        )
+        discount_percent = float(
+            local_transaction.get("discount_percent")
+            or local_offer.get("discount_percent")
+            or 0.0
+        )
+        final_price = float(
+            local_transaction.get("final_price")
+            or local_offer.get("final_price")
+            or original_price * (1 - discount_percent / 100.0)
+        )
     else:
+        quantity = 1
         original_price = float(product.get("current_price") or product.get("price") or 784.23)
         discount_percent = 10.0
         final_price = round(original_price * (1 - (discount_percent / 100.0)), 2)
@@ -136,6 +219,10 @@ def get_commerce_session(
         "discount": discount_percent,
         "discount_amount": round(original_price - final_price, 2),
         "final_price": final_price,
+        "quantity": quantity,
+        "total_original_price": round(original_price * quantity, 2),
+        "total_discount_amount": round((original_price - final_price) * quantity, 2),
+        "total_final_price": round(final_price * quantity, 2),
         "customer": {
             "customer_id": resolved_customer_id,
             "name": customer.get("customer_name", "AgentCommerce Customer"),
@@ -153,16 +240,25 @@ def create_payment_order(
     request: CreatePaymentOrderRequest,
 ):
 
-    agent = CommerceExecutionAgent()
+    if request.quantity < 1:
+        raise HTTPException(status_code=400, detail="quantity must be at least 1")
+
+    agent = _get_execution_agent()
 
     result = agent.execute(
         customer_id=request.customer_id,
         product_id=request.product_id,
         product_price=request.product_price,
+        quantity=request.quantity,
         discount_percent=request.discount_percent,
         transaction_id=request.transaction_id,
         payment_method="RAZORPAY",
         execute_payment=True,
+        notes={
+            "customer_id": str(request.customer_id or ""),
+            "product_id": str(request.product_id),
+            "quantity": str(request.quantity),
+        },
     )
 
     # --------------------------------------------------------
@@ -244,19 +340,37 @@ def verify_payment(
     request: VerifyPaymentRequest,
 ):
 
-    agent = CommerceExecutionAgent()
+    try:
+        agent = _get_execution_agent()
+    except PyMongoError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": "Payment verification is temporarily unavailable because the database cannot be reached.",
+                "reason": str(exc),
+            },
+        ) from exc
 
     # SECURITY: Only transaction_id is used. Product data is ignored.
-    result = agent.verify_payment(
-        customer_id=None,  # Will be loaded from transaction
-        transaction_id=request.transaction_id,  # REQUIRED - single source of truth
-        product_id=None,  # NOT USED - ignored for security
-        product_price=None,  # NOT USED - ignored for security
-        discount_percent=None,  # NOT USED - ignored for security
-        razorpay_order_id=request.razorpay_order_id or "",
-        razorpay_payment_id=request.razorpay_payment_id,
-        razorpay_signature=request.razorpay_signature,
-    )
+    try:
+        result = agent.verify_payment(
+            customer_id=None,  # Will be loaded from transaction
+            transaction_id=request.transaction_id,  # REQUIRED - single source of truth
+            product_id=None,  # NOT USED - ignored for security
+            product_price=None,  # NOT USED - ignored for security
+            discount_percent=None,  # NOT USED - ignored for security
+            razorpay_order_id=request.razorpay_order_id or "",
+            razorpay_payment_id=request.razorpay_payment_id,
+            razorpay_signature=request.razorpay_signature,
+        )
+    except PyMongoError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": "Payment verification is temporarily unavailable because the database cannot be reached.",
+                "reason": str(exc),
+            },
+        ) from exc
 
     if result["final_action"] in {
         "PAYMENT_VERIFICATION_FAILED",

@@ -44,6 +44,8 @@ class TransactionState:
 
     product_id: Optional[int] = None
 
+    quantity: int = 1
+
     # ========================================================
     # PRICING (ORIGINAL → NEGOTIATED → FINAL)
     # ========================================================
@@ -59,6 +61,8 @@ class TransactionState:
     discount_percent: float = 0.0
 
     discount: float = 0.0
+
+    negotiation_round: int = 0
 
     currency: str = "INR"
 

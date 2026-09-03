@@ -22,6 +22,11 @@ function App() {
         />
 
         <Route
+          path="/commerce/chat/session/:sessionId"
+          element={<Chat />}
+        />
+
+        <Route
           path="/checkout"
           element={<Checkout />}
         />

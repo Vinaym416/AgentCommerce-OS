@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.routes.commerce import router as commerce_router
 from api.routes.webhook import router as webhook_router
 from api.routes.chat import router as chat_router
+from api.routes.websocket import router as websocket_router
 
 app = FastAPI(
     title="AgentCommerce OS",
@@ -47,6 +48,11 @@ app.include_router(
     chat_router,
     prefix="/commerce",
     tags=["Chat"],
+)
+
+app.include_router(
+    websocket_router,
+    prefix="/commerce",
 )
 
 # ============================================================

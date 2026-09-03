@@ -1436,7 +1436,7 @@ if str(ROOT) not in sys.path:
 from script.agents.buyer_agent import BuyerAgent
 from script.agents.gemini_buyer_agent import GeminiBuyerAgent
 from script.agents.minimax_buyer_agent import MiniMaxBuyerAgent
-from script.agents.schemas import ProductCandidate
+from script.agents.schemas import BuyerIntent, ProductCandidate
 from script.agents.negotiation_agent import NegotiationAgent
 from script.agents.commerce_execution_agent import CommerceExecutionAgent
 from script.agents.order_agent import OrderResult
@@ -1453,6 +1453,7 @@ from script.catalog.product_retriever import ProductRetriever
 from script.context.customer_context import CustomerContext
 from script.context.opportunity_engine import OpportunityEngine
 from script.context.agent_memory import AgentMemory
+from script.context.chat_session_store import ChatSessionStore
 
 from script.policy.merchant_decision_engine import (
     MerchantDecisionEngine
@@ -1535,9 +1536,12 @@ class CommerceAgent:
         customer_id: Optional[int] = None,
         product_id: Optional[int] = None,
         transaction_id: Optional[str] = None,
+        negotiation_requested: bool = False,
+        button_action: Optional[str] = None,
         payment_method: str = "UPI",
         execute_payment: bool = False,
         simulate_failure: bool = False,
+        session_id: Optional[str] = None,
     ) -> Dict[str, Any]:
 
         if not message or not message.strip():
@@ -1546,17 +1550,44 @@ class CommerceAgent:
             )
 
         trace: List[str] = []
-
-        if customer_id is not None:
-            self.memory.set_message(message, customer_id)
+        session = (
+            ChatSessionStore().get(session_id)
+            if session_id
+            else None
+        )
 
         is_new_search = (
             customer_id is not None
             and product_id is None
-            and not self._is_product_reference(message)
-            and not self._is_price_followup(message)
             and not self._is_acceptance_message(message)
+            and (
+                self._is_new_catalog_search(message)
+                or not self._is_product_reference(message)
+                and not self._is_price_followup(message)
+            )
         )
+
+        if button_action == "close_negotiation":
+            return {
+                "message": "No problem. The negotiation is closed. What other product would you like to explore?",
+                "action": "NEGOTIATION_CLOSED",
+                "final_action": "NEGOTIATION_CLOSED",
+                "products": [],
+                "offer": None,
+                "transaction": None,
+                "agent_trace": ["SESSION_NEGOTIATION_CLOSED"],
+            }
+
+        session_product = self._product_from_session(session)
+        session_intent = self._intent_from_session(session)
+
+        negotiation_requested = (
+            negotiation_requested
+            or self._is_negotiation_message(message)
+        )
+
+        if customer_id is not None:
+            self.memory.set_message(message, customer_id)
 
         if is_new_search:
             self.memory.reset_product_selection(customer_id)
@@ -1620,23 +1651,63 @@ class CommerceAgent:
         )
 
         print("BuyerAgent processing customer message...")
-        try:
-            intent = self.buyer_agent.extract_intent(message)
-            print("BuyerAgent processed with primary model response.")
-        except Exception as exc:
-            if self.fallback_buyer_agent is not None:
-                print(f"Primary buyer agent failed, using Gemini fallback: {exc}")
-                try:
-                    intent = self.fallback_buyer_agent.extract_intent(message)
-                    print("BuyerAgent processed with GEMINI fallback response.")
-                except Exception as fallback_exc:
-                    if self.local_buyer_agent is None:
-                        raise fallback_exc
-                    print(f"Gemini buyer agent failed, using local fallback: {fallback_exc}")
-                    intent = self.local_buyer_agent.analyze(message)
-                    print("BuyerAgent processed with LOCAL FALLBACK response.")
-            else:
-                raise
+        reuse_session_context = (
+            session_product is not None
+            and not is_new_search
+            and (
+                product_id is not None
+                or self._is_product_reference(message)
+                or self._is_price_followup(message)
+                or button_action in {"negotiate", "negotiate_again"}
+            )
+        )
+        if reuse_session_context and session_intent is not None:
+            intent = session_intent
+            print("BuyerAgent skipped: reused saved session intent.")
+        elif button_action in {"negotiate", "negotiate_again"}:
+            intent = BuyerIntent(
+                intent="NEGOTIATE",
+                budget_min=0.0,
+                budget_max=None,
+                currency="INR",
+                product_category="general",
+                discount_requested=True,
+                discount_value=None,
+                urgency="medium",
+                confidence_score=1.0,
+                product_preferences=[],
+                constraints=[],
+            )
+            negotiation_requested = True
+            print("BuyerAgent skipped: deterministic button negotiation intent.")
+        else:
+            try:
+                intent = self.buyer_agent.extract_intent(message)
+                print("BuyerAgent processed with primary model response.")
+            except Exception as exc:
+                if self.fallback_buyer_agent is not None:
+                    print(f"Primary buyer agent failed, using Gemini fallback: {exc}")
+                    try:
+                        intent = self.fallback_buyer_agent.extract_intent(message)
+                        print("BuyerAgent processed with GEMINI fallback response.")
+                    except Exception as fallback_exc:
+                        if self.local_buyer_agent is None:
+                            raise fallback_exc
+                        print(f"Gemini buyer agent failed, using local fallback: {fallback_exc}")
+                        intent = self.local_buyer_agent.analyze(message)
+                        print("BuyerAgent processed with LOCAL FALLBACK response.")
+                else:
+                    raise
+
+        if negotiation_requested:
+            intent.discount_requested = True
+
+        if product_id is not None:
+            product_preferences = list(intent.product_preferences or [])
+            product_reference = f"product_id:{int(product_id)}"
+            if product_reference not in product_preferences:
+                product_preferences.insert(0, product_reference)
+            intent.product_preferences = product_preferences
 
         print(f"BuyerAgent output: intent={intent.intent}, budget={intent.budget}, discount_requested={intent.discount_requested}, max_discount_requested={intent.max_discount_requested}")
 
@@ -1651,12 +1722,14 @@ class CommerceAgent:
                 TransactionState.OFFER_CREATED,
                 TransactionState.COUNTER_OFFERED,
             }
+            and not is_new_search
             else None
         )
         locked_product_id = (
             product_id
             or model_product_id
             or active_transaction_product_id
+            or (session_product.product_id if reuse_session_context else None)
         )
 
         # ----------------------------------------------------
@@ -1678,6 +1751,9 @@ class CommerceAgent:
         if customer_id is not None and is_explicit_product_request:
             selected_product = self.memory.get_selected_product(customer_id)
 
+        if locked_product_id is None and selected_product is not None:
+            locked_product_id = selected_product.product_id
+
         if locked_product_id is not None:
             selected_product = next(
                 (
@@ -1687,6 +1763,13 @@ class CommerceAgent:
                 ),
                 None,
             ) if customer_id is not None else None
+
+            if selected_product is None:
+                if (
+                    session_product is not None
+                    and int(session_product.product_id) == int(locked_product_id)
+                ):
+                    selected_product = session_product
 
             if selected_product is None:
                 product_row = self.product_retriever.get_by_product_id(locked_product_id)
@@ -1786,7 +1869,99 @@ class CommerceAgent:
 
         top_product = products[0]
 
-        if intent.discount_requested and intent.max_discount_requested is None:
+        policy_max_discount = float(
+            self.policy_engine.merchant_policy.max_discount_percent
+        )
+        category_max_discount = min(
+            policy_max_discount,
+            self.policy_engine.get_max_discount(top_product.category_name),
+        )
+        product_max_discount = self._product_max_discount(top_product)
+        negotiation_max_discount = min(category_max_discount, product_max_discount)
+        negotiation_rounds = self._max_negotiation_rounds(
+            purchase_score=0.0,
+            discount_score=0.0,
+            category_max_discount=category_max_discount,
+        )
+        requested_discount = intent.max_discount_requested
+        if requested_discount is not None and float(requested_discount) <= 0:
+            requested_discount = None
+        target_price = self._extract_target_price(message)
+        customer_supplied_discount = (
+            requested_discount is not None
+            and float(requested_discount or 0.0) > 0.0
+            or target_price is not None
+        )
+        automatic_negotiation_round = (
+            button_action in {"negotiate", "negotiate_again"}
+            and not customer_supplied_discount
+        )
+        if requested_discount is None and target_price is not None and top_product.current_price > 0:
+            requested_discount = max(
+                0.0,
+                ((top_product.current_price - target_price) / top_product.current_price) * 100.0,
+            )
+            intent.discount_requested = True
+        active_product_transaction = (
+            transaction is not None
+            and transaction.product_id == top_product.product_id
+            and transaction.status in {
+                TransactionState.OFFER_CREATED,
+                TransactionState.COUNTER_OFFERED,
+            }
+        )
+
+        if (
+            negotiation_requested
+            and requested_discount is None
+            and active_product_transaction
+        ):
+            requested_discount = self._negotiation_discount_for_round(
+                category_max_discount,
+                transaction.negotiation_round,
+                negotiation_max_discount,
+            )
+        elif negotiation_requested and requested_discount is None:
+            requested_discount = self._negotiation_discount_for_round(
+                category_max_discount,
+                0,
+                negotiation_max_discount,
+            )
+
+        if intent.discount_requested and requested_discount is None:
+            if not locked_product_id:
+                trace.append("NEGOTIATION_AMOUNT_REQUIRED")
+                return self._build_response(
+                    intent=intent,
+                    customer=customer,
+                    products=[top_product],
+                    merchant_decision=None,
+                    negotiation=None,
+                    checkout=None,
+                    payment=None,
+                    order=None,
+                    policy_result=None,
+                    final_action="NEGOTIATION_AMOUNT_REQUIRED",
+                    trace=trace,
+                    purchase_score=0.0,
+                    discount_score=0.0,
+                )
+
+            current_discount = (
+                float(transaction.discount_percent)
+                if active_product_transaction
+                else 0.0
+            )
+            requested_discount = min(
+                negotiation_max_discount,
+                current_discount + 2.0,
+            )
+
+        if (
+            intent.discount_requested
+            and requested_discount is None
+            and not self._is_new_catalog_search(message)
+        ):
             trace.append("NEGOTIATION_AMOUNT_REQUIRED")
             return self._build_response(
                 intent=intent,
@@ -1846,6 +2021,77 @@ class CommerceAgent:
             if intent.discount_requested:
                 discount_score = max(discount_score, 0.70)
 
+        negotiation_max_discount = self._urgency_discount_ceiling(
+            policy_max_discount=policy_max_discount,
+            product_max_discount=product_max_discount,
+            urgency=intent.urgency,
+            purchase_score=purchase_score,
+        )
+        if category_max_discount <= 15.0:
+            negotiation_max_discount = category_max_discount
+        negotiation_rounds = self._max_negotiation_rounds(
+            purchase_score=purchase_score,
+            discount_score=discount_score,
+            category_max_discount=category_max_discount,
+        )
+        requested_discount_exceeds_ceiling = (
+            requested_discount is not None
+            and requested_discount > negotiation_max_discount
+        )
+
+        if (
+            intent.discount_requested
+            and active_product_transaction
+            and transaction.negotiation_round >= negotiation_rounds
+            and negotiation_requested
+            and not customer_supplied_discount
+        ):
+            return self._build_response(
+                intent=intent,
+                customer=customer,
+                products=[],
+                merchant_decision=None,
+                negotiation=None,
+                checkout=None,
+                payment=None,
+                order=None,
+                policy_result=None,
+                final_action="NEGOTIATION_INPUT_REQUIRED",
+                trace=trace + ["MAX_NEGOTIATION_REACHED", "NEGOTIATION_INPUT_REQUIRED"],
+                purchase_score=purchase_score,
+                discount_score=discount_score,
+            )
+
+        if not intent.discount_requested:
+            trace.extend([
+                "NO_DISCOUNT_REQUEST",
+                "FINAL_DECISION",
+            ])
+            if customer_id is not None:
+                self._save_transaction(
+                    customer_id=customer_id,
+                    product_id=top_product.product_id,
+                    original_price=top_product.current_price,
+                    discount_percent=0,
+                    final_price=top_product.current_price,
+                    status=TransactionState.OFFER_CREATED,
+                )
+            return self._build_response(
+                intent=intent,
+                customer=customer,
+                products=products,
+                merchant_decision=None,
+                negotiation=None,
+                checkout=None,
+                payment=None,
+                order=None,
+                policy_result=None,
+                final_action="RECOMMEND_PRODUCT",
+                trace=trace,
+                purchase_score=purchase_score,
+                discount_score=discount_score,
+            )
+
         # ----------------------------------------------------
         # 6. MERCHANT DECISION
         # ----------------------------------------------------
@@ -1872,9 +2118,47 @@ class CommerceAgent:
 
                 product_price=(
                     top_product.current_price
+                ),
+
+                requested_discount=(
+                    requested_discount
                 )
             )
         )
+
+        if requested_discount_exceeds_ceiling:
+            merchant_decision.approved_discount_percent = round(
+                negotiation_max_discount,
+                2,
+            )
+            merchant_decision.merchant_action = "COUNTER_OFFER"
+            merchant_decision.decision = "COUNTER_OFFER"
+            merchant_decision.negotiation_allowed = False
+            merchant_decision.reason = (
+                "Requested discount exceeds the urgency and opportunity limit for this product."
+            )
+
+        opportunity_is_strong = (
+            purchase_score >= 0.60
+            and discount_score >= 0.65
+        )
+        requested_discount = max(
+            0.0,
+            float(requested_discount or 0.0),
+        )
+        if requested_discount > negotiation_max_discount:
+            merchant_decision.approved_discount_percent = round(
+                negotiation_max_discount
+                if opportunity_is_strong
+                else max(0.0, negotiation_max_discount - 2.0),
+                2,
+            )
+            merchant_decision.merchant_action = "COUNTER_OFFER"
+            merchant_decision.decision = "COUNTER_OFFER"
+            merchant_decision.negotiation_allowed = False
+            merchant_decision.reason = (
+                "Requested discount exceeds the product limit; this is the maximum available offer."
+            )
 
         if customer_id is not None:
             self.memory.set_merchant_decision(merchant_decision, customer_id)
@@ -1898,8 +2182,8 @@ class CommerceAgent:
         print("NegotiationAgent negotiating discount...")
         negotiation = self.negotiation_agent.negotiate(
             requested_discount=(
-                intent.max_discount_requested
-                if customer_requested_discount and intent.max_discount_requested is not None
+                requested_discount
+                if customer_requested_discount and requested_discount is not None
                 else merchant_decision.approved_discount_percent
                 if customer_requested_discount
                 else None
@@ -2010,9 +2294,40 @@ class CommerceAgent:
 
                 purchase_opportunity_score=(
                     purchase_score
-                )
+                ),
+
+                product_category=top_product.category_name,
             )
         )
+
+        if not policy_result.get("allowed", False):
+            ordinary_counter_discount = max(
+                0.0,
+                negotiation_max_discount - 2.0,
+            )
+            approved_discount = min(
+                requested_discount,
+                negotiation_max_discount,
+            ) if automatic_negotiation_round else (
+                negotiation_max_discount
+                if opportunity_is_strong
+                else ordinary_counter_discount
+            )
+            policy_result = {
+                "allowed": True,
+                "approved_discount_percent": round(approved_discount, 2),
+                "discount_amount": round(top_product.current_price * approved_discount / 100.0, 2),
+                "final_price": round(top_product.current_price * (1.0 - approved_discount / 100.0), 2),
+                "reasons": [
+                    "counter_offer_at_product_limit"
+                    if requested_discount > negotiation_max_discount
+                    else "counter_offer_at_product_limit_after_policy_check"
+                ],
+            }
+            merchant_decision.approved_discount_percent = round(approved_discount, 2)
+            merchant_decision.merchant_action = "COUNTER_OFFER"
+            merchant_decision.decision = "COUNTER_OFFER"
+            merchant_decision.negotiation_allowed = False
 
         if customer_id is not None:
             self.memory.set_policy_result(policy_result, customer_id)
@@ -2069,6 +2384,9 @@ class CommerceAgent:
                     top_product.current_price,
                 ),
                 status=transaction_status,
+                negotiation_round=(
+                    (transaction.negotiation_round if transaction else 0) + 1
+                ),
             )
 
             if customer_id is not None:
@@ -2165,8 +2483,12 @@ class CommerceAgent:
             for phrase in {
                 "this product",
                 "that product",
+                "same product",
+                "previous product",
+                "last product",
                 "this one",
                 "that one",
+                "same one",
                 "the product",
                 "the item",
             }
@@ -2183,13 +2505,54 @@ class CommerceAgent:
             "percent off",
             "cheaper",
             "price",
-            "deal",
             "save",
             "reduce",
+            "negotiate",
+            "negotiation",
+            "better price",
         }
         return (
             any(phrase in text for phrase in discount_phrases)
             or "%" in text
+        )
+
+    @staticmethod
+    def _is_negotiation_message(message: str) -> bool:
+        text = " ".join(message.lower().strip().split())
+        return any(
+            phrase in text
+            for phrase in (
+                "negotiate",
+                "negotiation",
+                "better price",
+            )
+        )
+
+    @staticmethod
+    def _extract_target_price(message: str) -> Optional[float]:
+        match = re.search(
+            r"(?:price|pay|for|at)\s*(?:inr|rs|₹)?\s*([0-9][0-9,]*)\b",
+            message.lower(),
+            re.IGNORECASE,
+        )
+        return float(match.group(1).replace(",", "")) if match else None
+
+    def _is_new_catalog_search(self, message: str) -> bool:
+        text = " ".join(message.lower().strip().split())
+        return any(
+            phrase in text
+            for phrase in {
+                "best deal",
+                "show me",
+                "find me",
+                "find a",
+                "find the",
+                "looking for",
+                "recommend",
+                "more options",
+                "other products",
+                "different product",
+            }
         )
 
     def _is_acceptance_message(self, message: str) -> bool:
@@ -2225,6 +2588,7 @@ class CommerceAgent:
         discount_percent: float,
         final_price: float,
         status: str,
+        negotiation_round: int = 0,
     ) -> Optional[TransactionState]:
         if customer_id is None:
             return None
@@ -2241,7 +2605,72 @@ class CommerceAgent:
             payment_transaction_id=None,
             order_id=None,
             customer_accepted=False,
+            negotiation_round=negotiation_round,
         )
+
+    def _max_negotiation_rounds(
+        self,
+        purchase_score: float = 0.0,
+        discount_score: float = 0.0,
+        category_max_discount: Optional[float] = None,
+    ) -> int:
+        if category_max_discount is not None:
+            category_max_discount = float(category_max_discount)
+            if category_max_discount <= 9.0:
+                return 2
+            if category_max_discount <= 15.0:
+                return 3
+            return 4
+
+        opportunity = (float(purchase_score) + float(discount_score)) / 2.0
+        if opportunity >= 0.70:
+            return 4
+        if opportunity >= 0.50:
+            return 3
+        return 2
+
+    @staticmethod
+    def _negotiation_discount_for_round(
+        category_max_discount: float,
+        negotiation_round: int,
+        effective_max_discount: float,
+    ) -> float:
+        """Return the automatic offer for a category-specific negotiation round."""
+        maximum = float(category_max_discount)
+        round_index = max(0, int(negotiation_round))
+
+        if maximum <= 9.0:
+            discounts = (maximum - 1.0, maximum - 1.5)
+        elif maximum <= 15.0:
+            discounts = (maximum - 1.0, maximum - 2.0, maximum - 2.5)
+        else:
+            discounts = tuple(2.0 ** (index + 1) for index in range(4))
+
+        selected = discounts[min(round_index, len(discounts) - 1)]
+        return round(max(0.0, min(float(effective_max_discount), selected)), 2)
+
+    @staticmethod
+    def _urgency_discount_ceiling(
+        policy_max_discount: float,
+        product_max_discount: float,
+        urgency: str,
+        purchase_score: float,
+    ) -> float:
+        maximum = min(policy_max_discount, product_max_discount)
+        is_good_opportunity = float(purchase_score) >= 0.60
+        reductions = {
+            ("high", False): 6.0,
+            ("high", True): 5.0,
+            ("medium", False): 4.0,
+            ("medium", True): 3.0,
+        }
+        reduction = reductions.get((str(urgency).lower(), is_good_opportunity), 0.0)
+        return max(0.0, round(maximum - reduction, 2))
+
+    @staticmethod
+    def _product_max_discount(product) -> float:
+        """Return the product ceiling available to the policy layer."""
+        return 20.0
 
     def _complete_transaction(
         self,
@@ -2474,6 +2903,52 @@ class CommerceAgent:
 
         return products
 
+    def _product_from_session(self, session) -> Optional[ProductCandidate]:
+        """Restore the last product from the persisted session response."""
+        if not session:
+            return None
+
+        messages = session.get("messages", [])
+        for message in reversed(messages):
+            response = message.get("data") or {}
+            products = response.get("products") or []
+            if not products and response.get("offer"):
+                products = [response["offer"]]
+            if products:
+                try:
+                    return self._rows_to_products(products)[0]
+                except (IndexError, TypeError, ValueError):
+                    return None
+        return None
+
+    @staticmethod
+    def _intent_from_session(session) -> Optional[BuyerIntent]:
+        """Restore a previously persisted intent when the session contains one."""
+        if not session:
+            return None
+
+        for message in reversed(session.get("messages", [])):
+            data = message.get("data") or {}
+            source = data.get("customer_intent")
+            if not source:
+                continue
+            try:
+                return BuyerIntent(
+                    intent=source.get("intent", "PRODUCT_SEARCH"),
+                    budget_max=source.get("budget"),
+                    currency="INR",
+                    product_category="general",
+                    discount_requested=bool(source.get("discount_requested", False)),
+                    discount_value=source.get("max_discount_requested"),
+                    urgency=source.get("urgency", "medium"),
+                    confidence_score=float(source.get("confidence", 1.0) or 1.0),
+                    product_preferences=list(source.get("product_preferences") or []),
+                    constraints=list(source.get("constraints") or []),
+                )
+            except (TypeError, ValueError):
+                return None
+        return None
+
     @staticmethod
     def _extract_product_id_from_intent(intent) -> Optional[int]:
         """Read an explicit product id when the model included one in its metadata."""
@@ -2591,8 +3066,10 @@ class CommerceAgent:
             "message": {
                 "RECOMMEND_PRODUCT": "I found a few options for you.",
                 "OFFER_REQUESTED": "I prepared an offer for this product.",
-                "COUNTER_OFFER": "I checked the available offer and negotiated a better price for you.",
+                "COUNTER_OFFER": "Your requested discount is above this product's limit. I can offer the maximum available price shown.",
                 "NEGOTIATE": "I'll check whether I can improve the price for you.",
+                "MAX_DISCOUNT_REACHED": "This product can only be discounted by the amount shown. That is my maximum offer.",
+                "NEGOTIATION_INPUT_REQUIRED": "Tell me the maximum discount percentage or target price you need for this product.",
                     "NEGOTIATION_AMOUNT_REQUIRED": "Tell me what discount percentage you want, and I will try to get you the best price.",
                 "PAYMENT_PENDING": "Great. Your checkout is ready.",
                 "CHECKOUT_READY": "Great. Your checkout is ready.",
@@ -2798,6 +3275,7 @@ class CommerceAgent:
             "OFFER_REQUESTED",
             "COUNTER_OFFER",
             "NEGOTIATE",
+            "MAX_DISCOUNT_REACHED",
             "LIMITED_OFFER",
         }:
             result["offer"] = {

@@ -140,8 +140,6 @@ class PaymentService:
             }
 
         stored_amount = transaction_payload.get("final_price")
-        if expected_amount is not None:
-            stored_amount = expected_amount
 
         if stored_amount is None:
             return {

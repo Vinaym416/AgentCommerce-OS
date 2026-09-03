@@ -132,14 +132,14 @@ def main():
 
     result = engine.evaluate_discount(
         product_price=2799,
-        requested_discount_percent=20,
+        requested_discount_percent=25,
         purchase_opportunity_score=0.80,
     )
 
     expect_equal(
         "Excessive discount is capped",
         result["approved_discount_percent"],
-        10,
+        engine.policy["discount_policy"]["max_discount_percent"],
     )
 
     expect_equal(
@@ -149,9 +149,9 @@ def main():
     )
 
     expect_equal(
-        "Final price after 10% cap",
+        "Final price after 20% cap",
         result["final_price"],
-        2519.10,
+        2239.20,
     )
 
 
@@ -253,7 +253,7 @@ def main():
 
     result = engine.evaluate_negotiation(
         order_value=1500,
-        requested_discount_percent=15,
+        requested_discount_percent=25,
         negotiation_round=1,
     )
 

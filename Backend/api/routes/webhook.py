@@ -22,6 +22,7 @@ MongoDB persistence
 """
 
 import json
+from functools import lru_cache
 
 from fastapi import APIRouter, Header, HTTPException, Request
 
@@ -43,7 +44,10 @@ router = APIRouter()
 
 webhook_handler = RazorpayWebhookHandler()
 
-webhook_service = WebhookService()
+
+@lru_cache(maxsize=1)
+def get_webhook_service() -> WebhookService:
+    return WebhookService()
 
 
 # ============================================================
@@ -128,7 +132,7 @@ async def razorpay_webhook(
     # PROCESS VERIFIED WEBHOOK
     # --------------------------------------------------------
 
-    result = webhook_service.process(
+    result = get_webhook_service().process(
 
         webhook_result=webhook_result,
 

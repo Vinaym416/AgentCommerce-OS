@@ -167,6 +167,7 @@ class CommerceExecutionAgent:
         customer_id: Optional[int] = None,
         product_id: Optional[int] = None,
         product_price: Optional[float] = None,
+        quantity: int = 1,
         amount: Optional[float] = None,
         currency: str = "INR",
         discount_percent: float = 0.0,
@@ -203,6 +204,12 @@ class CommerceExecutionAgent:
                 trace=["VALIDATION"],
             )
 
+        if quantity < 1:
+            return self._failure_response(
+                reason="quantity_must_be_at_least_one",
+                trace=["VALIDATION"],
+            )
+
         if product_price <= 0:
 
             return self._failure_response(
@@ -225,7 +232,7 @@ class CommerceExecutionAgent:
 
         checkout = self.checkout_agent.prepare_checkout(
             product_id=product_id,
-            product_price=product_price,
+            product_price=product_price * quantity,
             discount_percent=discount_percent,
         )
 
@@ -319,6 +326,7 @@ class CommerceExecutionAgent:
         transaction = transaction_manager.create_or_update(
                 customer_id=customer_id,
                 product_id=product_id,
+                quantity=quantity,
                 original_price=checkout.original_price,
                 negotiated_price=checkout.original_price,  # Will be negotiated later
                 final_price=checkout.final_price,

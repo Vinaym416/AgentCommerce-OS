@@ -209,7 +209,13 @@ class PolicyEngine:
             "requires_approval": requires_approval,
         }
 
-    def evaluate_discount(self, product_price, requested_discount_percent, purchase_opportunity_score):
+    def evaluate_discount(
+        self,
+        product_price,
+        requested_discount_percent,
+        purchase_opportunity_score,
+        product_category: Optional[str] = None,
+    ):
         discount_policy = self.policy["discount_policy"]
         product_price = float(product_price or 0.0)
         requested_discount_percent = float(requested_discount_percent or 0.0)
@@ -218,7 +224,7 @@ class PolicyEngine:
         if not discount_policy["enabled"]:
             return {"allowed": False, "approved_discount_percent": 0, "reason": "discount_disabled"}
 
-        max_discount = float(discount_policy["max_discount_percent"])
+        max_discount = self.get_max_discount(product_category)
         if discount_policy["discount_requires_high_intent"] and purchase_opportunity_score < 0.60:
             return {"allowed": False, "approved_discount_percent": 0, "reason": "insufficient_purchase_intent"}
 
@@ -236,6 +242,25 @@ class PolicyEngine:
             "final_price": round(product_price - discount_amount, 2),
             "reasons": reasons,
         }
+
+    def get_max_discount(self, product_category: Optional[str] = None) -> float:
+        """Resolve a category-specific maximum, falling back to the global policy."""
+        discount_policy = self.policy.get("discount_policy", {})
+        global_max = float(discount_policy.get("max_discount_percent", 0.0))
+        if not product_category:
+            return global_max
+
+        overrides = discount_policy.get("category_overrides_discount", {})
+        category_key = str(product_category).strip().lower()
+        category_key = category_key.removeprefix("category ").strip()
+        for key, override in overrides.items():
+            override_key = str(key).strip().lower().removeprefix("category ").strip()
+            if override_key == category_key:
+                if isinstance(override, dict):
+                    override = override.get("max_discount_percent")
+                if override is not None:
+                    return max(0.0, float(override))
+        return global_max
 
     def evaluate_negotiation(self, order_value, requested_discount_percent, negotiation_round):
         policy = self.policy["negotiation_policy"]
