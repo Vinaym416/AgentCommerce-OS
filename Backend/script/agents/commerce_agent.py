@@ -1412,6 +1412,7 @@ to CommerceExecutionAgent. No direct payment handling.
 """
 
 import json
+import re
 import sys
 import pandas as pd
 from pathlib import Path
@@ -1434,6 +1435,7 @@ if str(ROOT) not in sys.path:
 
 from script.agents.buyer_agent import BuyerAgent
 from script.agents.gemini_buyer_agent import GeminiBuyerAgent
+from script.agents.minimax_buyer_agent import MiniMaxBuyerAgent
 from script.agents.schemas import ProductCandidate
 from script.agents.negotiation_agent import NegotiationAgent
 from script.agents.commerce_execution_agent import CommerceExecutionAgent
@@ -1469,45 +1471,55 @@ class CommerceAgent:
 
     def __init__(self):
 
-        print(
-            "Initializing AgentCommerce OS..."
-        )
+        # print(
+        #     "Initializing AgentCommerce OS..."
+        # )
 
         try:
-            self.buyer_agent = GeminiBuyerAgent()
-            self.fallback_buyer_agent = BuyerAgent()
-            print("BuyerAgent initialized with Gemini primary model.")
+            self.buyer_agent = MiniMaxBuyerAgent()
+            # print("BuyerAgent initialized with MiniMax ")
+            self.fallback_buyer_agent = GeminiBuyerAgent()
+            # print("GeminiBuyerAgent initialized ")
+            self.local_buyer_agent = BuyerAgent()
+            print("BuyerAgent initialized .")
         except Exception as exc:
-            self.buyer_agent = BuyerAgent()
-            self.fallback_buyer_agent = None
-            print(f"Gemini buyer agent unavailable, falling back to local model: {exc}")
+            try:
+                self.buyer_agent = GeminiBuyerAgent()
+                self.fallback_buyer_agent = BuyerAgent()
+                self.local_buyer_agent = None
+                print(f"MiniMax buyer agent unavailable, falling back to Gemini: {exc}")
+            except Exception as fallback_exc:
+                self.buyer_agent = BuyerAgent()
+                self.fallback_buyer_agent = None
+                self.local_buyer_agent = None
+                print(f"MiniMax and Gemini buyer agents unavailable, using local model: {fallback_exc}")
 
         self.product_retriever = ProductRetriever()
-        print("ProductRetriever initialized.")
+        # print("ProductRetriever initialized.")
 
         self.customer_context = CustomerContext()
-        print("CustomerContext initialized.")
+        # print("CustomerContext initialized.")
 
         self.opportunity_engine = OpportunityEngine()
-        print("OpportunityEngine initialized.")
+        # print("OpportunityEngine initialized.")
 
         self.merchant_engine = MerchantDecisionEngine()
-        print("MerchantDecisionEngine initialized.")
+        # print("MerchantDecisionEngine initialized.")
 
         self.negotiation_agent = NegotiationAgent()
-        print("NegotiationAgent initialized.")
+        # print("NegotiationAgent initialized.")
 
         self.execution_agent = CommerceExecutionAgent()
-        print("CommerceExecutionAgent initialized.")
+        # print("CommerceExecutionAgent initialized.")
 
         self.transaction_manager = TransactionManager()
-        print("TransactionManager initialized.")
+        # print("TransactionManager initialized.")
 
         self.policy_engine = PolicyEngine()
-        print("PolicyEngine initialized.")
+        # print("PolicyEngine initialized.")
 
         self.memory = AgentMemory()
-        print("AgentMemory initialized.")
+        # print("AgentMemory initialized.")
 
         print(
             "All agent tools initialized."
@@ -1610,12 +1622,19 @@ class CommerceAgent:
         print("BuyerAgent processing customer message...")
         try:
             intent = self.buyer_agent.extract_intent(message)
-            print("BuyerAgent processed with GEMINI response.")
+            print("BuyerAgent processed with primary model response.")
         except Exception as exc:
             if self.fallback_buyer_agent is not None:
-                print(f"BuyerAgent Gemini failed, using local fallback: {exc}")
-                intent = self.fallback_buyer_agent.analyze(message)
-                print("BuyerAgent processed with LOCAL FALLBACK response.")
+                print(f"Primary buyer agent failed, using Gemini fallback: {exc}")
+                try:
+                    intent = self.fallback_buyer_agent.extract_intent(message)
+                    print("BuyerAgent processed with GEMINI fallback response.")
+                except Exception as fallback_exc:
+                    if self.local_buyer_agent is None:
+                        raise fallback_exc
+                    print(f"Gemini buyer agent failed, using local fallback: {fallback_exc}")
+                    intent = self.local_buyer_agent.analyze(message)
+                    print("BuyerAgent processed with LOCAL FALLBACK response.")
             else:
                 raise
 
@@ -1623,6 +1642,22 @@ class CommerceAgent:
 
         if customer_id is not None:
             self.memory.set_intent(intent, customer_id)
+
+        model_product_id = self._extract_product_id_from_intent(intent)
+        active_transaction_product_id = (
+            transaction.product_id
+            if transaction is not None
+            and transaction.status in {
+                TransactionState.OFFER_CREATED,
+                TransactionState.COUNTER_OFFERED,
+            }
+            else None
+        )
+        locked_product_id = (
+            product_id
+            or model_product_id
+            or active_transaction_product_id
+        )
 
         # ----------------------------------------------------
         # 3. PRODUCT RETRIEVAL
@@ -1643,18 +1678,18 @@ class CommerceAgent:
         if customer_id is not None and is_explicit_product_request:
             selected_product = self.memory.get_selected_product(customer_id)
 
-        if product_id is not None:
+        if locked_product_id is not None:
             selected_product = next(
                 (
                     product
                     for product in self.memory.get_products(customer_id)
-                    if int(product.product_id) == int(product_id)
+                    if int(product.product_id) == int(locked_product_id)
                 ),
                 None,
             ) if customer_id is not None else None
 
             if selected_product is None:
-                product_row = self.product_retriever.get_by_product_id(product_id)
+                product_row = self.product_retriever.get_by_product_id(locked_product_id)
                 selected_product = (
                     self._rows_to_products(pd.DataFrame([product_row]))[0]
                     if product_row is not None
@@ -1682,11 +1717,16 @@ class CommerceAgent:
             product_id is not None and selected_product is not None
         )
 
-        if referenced_product or price_followup or explicit_product_selection:
+        if (
+            referenced_product
+            or price_followup
+            or explicit_product_selection
+            or (selected_product is not None and locked_product_id is not None)
+        ):
             trace.append("AGENT_MEMORY")
             resolved_product = (
                 selected_product
-                if product_id is not None
+                if locked_product_id is not None
                 else referenced_product or selected_product
             )
             products = [resolved_product] if resolved_product is not None else []
@@ -1745,6 +1785,24 @@ class CommerceAgent:
         # ----------------------------------------------------
 
         top_product = products[0]
+
+        if intent.discount_requested and intent.max_discount_requested is None:
+            trace.append("NEGOTIATION_AMOUNT_REQUIRED")
+            return self._build_response(
+                intent=intent,
+                customer=customer,
+                products=[top_product],
+                merchant_decision=None,
+                negotiation=None,
+                checkout=None,
+                payment=None,
+                order=None,
+                policy_result=None,
+                final_action="NEGOTIATION_AMOUNT_REQUIRED",
+                trace=trace,
+                purchase_score=0.0,
+                discount_score=0.0,
+            )
 
         # ----------------------------------------------------
         # 5. CUSTOMER + PRODUCT INTELLIGENCE
@@ -2343,58 +2401,93 @@ class CommerceAgent:
         if len(product_rows) == 0:
             return products
 
-        for _, row in product_rows.iterrows():
+        rows = (
+            product_rows.to_dict(orient="records")
+            if isinstance(product_rows, pd.DataFrame)
+            else product_rows
+        )
+
+        for row in rows:
+            if isinstance(row, ProductCandidate):
+                products.append(row)
+                continue
+
+            def value(*keys, default=None):
+                for key in keys:
+                    candidate = row.get(key)
+                    if candidate is not None and not pd.isna(candidate):
+                        return candidate
+                return default
+
+            product_id = value("product_id", default=0)
+            current_price = value("current_price", "price", default=0.0)
+            product_score = value("product_score", "popularity_score", default=0.0)
 
             products.append(
                 ProductCandidate(
 
                     product_id=int(
-                        row["product_id"]
+                        product_id
                     ),
 
                     category_name=str(
-                        row["category_name"]
+                        value("category_name", "category", default="general")
                     ),
 
                     product_name=str(
-                        row.get("product_name", f"Product {int(row['product_id'])}")
+                        value("product_name", "name", default=f"Product {int(product_id)}")
                     ),
 
                     availability=str(
-                        row.get("availability", "available")
+                        value("availability", default="available")
                     ),
 
                     currency=str(
-                        row.get("currency", "INR")
+                        value("currency", default="INR")
                     ),
 
                     current_price=float(
-                        row["current_price"]
+                        current_price
                     ),
 
                     conversion_rate=float(
-                        row["conversion_rate"]
+                        value("conversion_rate", "popularity_score", default=0.0)
                     ),
 
                     demand_score=float(
-                        row["demand_score"]
+                        value("demand_score", "popularity_score", default=0.0)
                     ),
 
                     quality_score=float(
-                        row["quality_score"]
+                        value("quality_score", "rating", "avg_rating", default=0.0)
                     ),
 
                     product_score=float(
-                        row["product_score"]
+                        product_score
                     ),
 
                     rating=float(
-                        row["avg_rating"]
+                        value("avg_rating", "rating", default=0.0)
                     )
                 )
             )
 
         return products
+
+    @staticmethod
+    def _extract_product_id_from_intent(intent) -> Optional[int]:
+        """Read an explicit product id when the model included one in its metadata."""
+        values = list(getattr(intent, "product_preferences", []) or [])
+        values.extend(list(getattr(intent, "constraints", []) or []))
+        for value in values:
+            match = re.search(
+                r"\bproduct[_ ]?id\s*[:#]?\s*(\d+)\b",
+                str(value),
+                re.IGNORECASE,
+            )
+            if match:
+                return int(match.group(1))
+        return None
 
     # ========================================================
     # NORMAL RECOMMENDATION
@@ -2500,6 +2593,7 @@ class CommerceAgent:
                 "OFFER_REQUESTED": "I prepared an offer for this product.",
                 "COUNTER_OFFER": "I checked the available offer and negotiated a better price for you.",
                 "NEGOTIATE": "I'll check whether I can improve the price for you.",
+                    "NEGOTIATION_AMOUNT_REQUIRED": "Tell me what discount percentage you want, and I will try to get you the best price.",
                 "PAYMENT_PENDING": "Great. Your checkout is ready.",
                 "CHECKOUT_READY": "Great. Your checkout is ready.",
                 "ORDER_CREATED": "Your payment was confirmed and your order was created.",
@@ -2833,40 +2927,45 @@ class CommerceAgent:
         customer
     ) -> Dict[str, Any]:
 
+        purchases = int(
+            customer.get(
+                "purchases",
+                customer.get("purchase_count", 0),
+            )
+            or 0
+        )
+        lifetime_value = float(
+            customer.get(
+                "lifetime_value",
+                customer.get("customer_revenue", 0.0),
+            )
+            or 0.0
+        )
+
         return {
 
-            "sessions": (
-                customer["sessions"]
-            ),
+            "sessions": customer.get("sessions", 0),
 
-            "purchases": (
-                customer["purchases"]
-            ),
+            "purchases": purchases,
 
             "purchase_rate": round(
-                customer["purchase_rate"],
+                float(customer.get("purchase_rate", customer.get("customer_purchase_rate", 0.0)) or 0.0),
                 4
             ),
 
             "average_order_value": round(
-                customer["average_order_value"],
+                float(customer.get("average_order_value", lifetime_value / purchases if purchases else 0.0) or 0.0),
                 2
             ),
 
             "average_discount": round(
-                customer["average_discount"],
+                float(customer.get("average_discount", customer.get("average_discount_taken", 0.0)) or 0.0),
                 2
             ),
 
-            "cart_rate": round(
-                customer["cart_rate"],
-                4
-            ),
+            "cart_rate": round(float(customer.get("cart_rate", 0.0) or 0.0), 4),
 
-            "abandonment_rate": round(
-                customer["abandonment_rate"],
-                4
-            ),
+            "abandonment_rate": round(float(customer.get("abandonment_rate", 0.0) or 0.0), 4),
 
             "customer_affinity_score": round(
                 customer[

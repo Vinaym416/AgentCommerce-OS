@@ -209,46 +209,101 @@ class MerchantDecisionEngine:
         self.policy = load_policy()
         self.repository = MerchantDecisionRepository()
 
+    @staticmethod
+    def _safe_float(value, default=0.0):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float(default)
+
     def decide(
         self,
         product_id,
-        purchase_opportunity_score,
-        discount_opportunity_score,
-        product_price=0,
+        price=None,
+        cost_price=None,
+        purchase_score=None,
+        discount_score=None,
+        requested_discount=0,
+        purchase_opportunity_score=None,
+        discount_opportunity_score=None,
+        product_price=None,
     ) -> MerchantDecision:
-        row = {
-            "product_id": product_id,
-            "purchase_opportunity_score": purchase_opportunity_score,
-            "discount_opportunity_score": discount_opportunity_score,
-            "merchant_growth_score": 0,
-            "unit_price": product_price,
-        }
+        if price is None and product_price is not None:
+            price = product_price
 
-        decision = decide_action(row, self.policy)
+        if purchase_score is None:
+            purchase_score = purchase_opportunity_score
+        if discount_score is None:
+            discount_score = discount_opportunity_score
 
-        self.repository.create({
-            "product_id": product_id,
-            "purchase_opportunity_score": purchase_opportunity_score,
-            "discount_opportunity_score": discount_opportunity_score,
-            "product_price": product_price,
-            "merchant_action": decision["merchant_action"],
-            "approved_discount_percent": decision[
-                "approved_discount_percent"
-            ],
-            "negotiation_allowed": decision["negotiation_allowed"],
-            "approval_status": decision["approval_status"],
-            "decision_reasons": decision.get("decision_reasons", []),
-        })
+        price = self._safe_float(price, 0.0)
+        cost_price = self._safe_float(cost_price, max(price * 0.6, 0.0))
+        purchase_score = self._safe_float(purchase_score, 0.0)
+        discount_score = self._safe_float(discount_score, 0.0)
+        requested_discount = self._safe_float(requested_discount, 0.0)
 
-        return MerchantDecision(
-            merchant_action=decision["merchant_action"],
-            approved_discount_percent=decision[
-                "approved_discount_percent"
-            ],
-            negotiation_allowed=decision["negotiation_allowed"],
-            approval_status=decision["approval_status"],
-            reason=", ".join(decision.get("decision_reasons", [])),
+        current_margin_percent = ((price - cost_price) / price * 100.0) if price > 0 else 0.0
+        max_allowed_discount = max(0.0, min(100.0, current_margin_percent - 10.0))
+
+        if purchase_score < 0.40:
+            decision = "REJECT_DISCOUNT"
+            approved_discount = 0.0
+            negotiation_allowed = False
+            reason = "Low purchase probability does not justify discounting."
+        elif requested_discount <= 0:
+            decision = "APPROVE_DISCOUNT"
+            approved_discount = 0.0
+            negotiation_allowed = False
+            reason = "Customer intent is healthy; no discount needed."
+        elif requested_discount > max_allowed_discount:
+            decision = "COUNTER_OFFER"
+            approved_discount = round(max_allowed_discount, 2)
+            negotiation_allowed = True
+            reason = "Requested discount exceeds hard margin floor; counter offer preserves 10% minimum margin."
+        else:
+            decision = "APPROVE_DISCOUNT"
+            approved_discount = round(requested_discount, 2)
+            negotiation_allowed = discount_score >= 0.55
+            reason = "High purchase probability justifies discount within merchant margin limits."
+
+        margin_impact = round((approved_discount / 100.0) * price, 2)
+
+        if purchase_score >= 0.75 and discount_score < 0.45 and approved_discount > 0:
+            decision = "COUNTER_OFFER"
+            approved_discount = round(min(approved_discount, max_allowed_discount / 2), 2)
+            negotiation_allowed = True
+            reason = "Strong conversion signal but margin protection requires a smaller discount."
+
+        decision_obj = MerchantDecision(
+            decision=decision,
+            approved_discount_percent=approved_discount,
+            max_allowed_discount=round(max_allowed_discount, 2),
+            negotiation_allowed=negotiation_allowed,
+            margin_impact=margin_impact,
+            reason=reason,
+            merchant_action=decision,
+            approval_status="AUTO_APPROVED" if decision == "APPROVE_DISCOUNT" else "STANDARD_APPROVAL" if decision == "COUNTER_OFFER" else "NOT_REQUIRED",
         )
+
+        try:
+            self.repository.create({
+                "product_id": product_id,
+                "price": price,
+                "cost_price": cost_price,
+                "purchase_score": purchase_score,
+                "discount_score": discount_score,
+                "requested_discount": requested_discount,
+                "decision": decision,
+                "approved_discount_percent": approved_discount,
+                "max_allowed_discount": decision_obj.max_allowed_discount,
+                "negotiation_allowed": negotiation_allowed,
+                "margin_impact": margin_impact,
+                "reason": reason,
+            })
+        except Exception:
+            pass
+
+        return decision_obj
 
 
 def main():

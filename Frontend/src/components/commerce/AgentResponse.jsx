@@ -48,6 +48,21 @@ export default function AgentResponse({ data, onAction }) {
     return <ProductDetail data={data} product={selectedProduct} onAction={onAction} />;
   }
 
+  if (action === "NEGOTIATION_AMOUNT_REQUIRED") {
+    return (
+      <div className="space-y-3">
+        <p className="leading-6 text-slate-300">
+          {data?.message || "Tell me what discount percentage you want, and I will try to get you the best price."}
+        </p>
+        {products[0] && (
+          <p className="text-xs text-slate-500">
+            {products[0].name || `Product ${products[0].product_id}`} · ₹{Number(products[0].price || 0).toLocaleString("en-IN")}
+          </p>
+        )}
+      </div>
+    );
+  }
+
   if (
     [
       "COUNTER_OFFER",

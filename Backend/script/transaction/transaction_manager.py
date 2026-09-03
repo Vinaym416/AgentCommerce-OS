@@ -165,48 +165,69 @@ class TransactionManager:
         )
 
         if state is None:
-
             state = TransactionState(
-                customer_id=customer_id
+                customer_id=customer_id,
+                product_id=kwargs.get("product_id"),
+                price=kwargs.get("price", kwargs.get("original_price", 0.0)),
+                discount=kwargs.get("discount", kwargs.get("discount_percent", 0.0)),
+                status=kwargs.get("status", "OFFER_CREATED"),
             )
-
-            self.transactions[
-                customer_id
-            ] = state
-
-        # ----------------------------------------------------
-        # APPLY ALL CHANGES
-        # ----------------------------------------------------
+            self.transactions[customer_id] = state
 
         for key, value in kwargs.items():
-
             if hasattr(state, key):
+                setattr(state, key, value)
 
-                setattr(
-                    state,
-                    key,
-                    value
-                )
+        if "price" in kwargs or "original_price" in kwargs:
+            price = kwargs.get("price", kwargs.get("original_price", state.original_price))
+            state.price = float(price)
+            state.original_price = float(price)
 
-        # ----------------------------------------------------
-        # UPDATE TIMESTAMP ONCE
-        # ----------------------------------------------------
+        if "discount" in kwargs or "discount_percent" in kwargs:
+            discount = kwargs.get("discount", kwargs.get("discount_percent", state.discount_percent))
+            state.discount = float(discount)
+            state.discount_percent = float(discount)
 
-        state.updated_at = (
-            datetime.now(
-                timezone.utc
-            ).isoformat()
-        )
+        if state.status in {"OFFER_CREATED", "COUNTER_OFFERED", "CHECKOUT_READY", "PAYMENT_PENDING", "PAYMENT_AUTHORIZED"}:
+            state.is_active = True
+        elif state.status in {"FAILED", "PAYMENT_FAILED", "CHECKOUT_FAILED", "ORDER_FAILED", "COMPLETED"}:
+            state.is_active = False
 
-        # ----------------------------------------------------
-        # PERSIST ONCE
-        # ----------------------------------------------------
+        if not state.created_at:
+            state.created_at = datetime.now(timezone.utc).isoformat()
+        if not state.expires_at:
+            created_time = datetime.fromisoformat(state.created_at.replace("Z", "+00:00"))
+            state.expires_at = (created_time + __import__("datetime").timedelta(minutes=5)).isoformat()
 
-        self.repository.upsert(
-            asdict(state)
-        )
-
+        state.updated_at = datetime.now(timezone.utc).isoformat()
+        self.repository.upsert(asdict(state))
         return state
+
+    def create_transaction(
+        self,
+        customer_id: int,
+        product_id: int,
+        price: float,
+        discount: float,
+        status: str = "OFFER_CREATED",
+    ) -> Dict[str, object]:
+        state = self.create_or_update(
+            customer_id=customer_id,
+            product_id=product_id,
+            price=price,
+            discount=discount,
+            status=status,
+        )
+        return self.get_summary(state)
+
+    def get_summary(self, state: TransactionState) -> Dict[str, object]:
+        return {
+            "transaction_id": state.transaction_id,
+            "status": state.status,
+            "created_at": state.created_at,
+            "expires_at": state.expires_at,
+            "is_active": bool(state.is_active),
+        }
 
     # ========================================================
     # CLEAR MEMORY CACHE

@@ -25,50 +25,70 @@ class CustomerContext:
     ):
         self.repository = repository or CustomerRepository()
 
+    @staticmethod
+    def _anonymous_profile():
+        return {
+            "customer_id": None,
+            "is_known": False,
+            "lifetime_value": 0.0,
+            "purchase_count": 0,
+            "average_discount_taken": 0.0,
+            "affinity_score": 0.5,
+            "discount_dependence": 0.5,
+            "risk_profile": "low",
+            "preferred_categories": [],
+            "customer_affinity_score": 0.5,
+            "customer_buying_confidence": 0.5,
+            "discount_dependence_score": 0.5,
+            "preferred_category": None,
+        }
+
     def get_customer(
         self,
-        customer_id: Optional[int]
+        customer_id: Optional[int],
+        session_id: Optional[str] = None,
     ):
 
         if customer_id is None:
-            return None
+            return self._anonymous_profile()
 
         row = self.repository.get_by_customer_id(int(customer_id))
 
         if row is None:
-            return None
+            return self._anonymous_profile()
 
-        return {
-            "customer_id": int(row["customer_id"]),
+        preferred_categories = row.get("preferred_categories") or row.get("preferred_category")
+        if isinstance(preferred_categories, str):
+            preferred_categories = [preferred_categories]
+        elif isinstance(preferred_categories, (list, tuple)):
+            preferred_categories = list(preferred_categories)
+        else:
+            preferred_categories = []
 
-            "sessions": int(row.get("customer_sessions", 0)),
+        lifetime_value = float(row.get("lifetime_value") or row.get("customer_revenue") or 0.0)
+        purchase_count = int(row.get("purchase_count") or row.get("customer_purchases") or 0)
+        average_discount_taken = float(row.get("average_discount_taken") or row.get("customer_avg_discount") or 0.0)
+        affinity_score = float(row.get("affinity_score") or row.get("customer_affinity_score") or 0.5)
+        discount_dependence = float(row.get("discount_dependence") or row.get("discount_dependence_score") or 0.5)
+        risk_profile = row.get("risk_profile") or ("low" if purchase_count <= 3 else "medium")
 
-            "purchases": int(row.get("customer_purchases", 0)),
-
-            "revenue": float(row.get("customer_revenue", 0)),
-
-            "average_order_value": float(row.get("customer_avg_order_value", 0)),
-
-            "average_discount": float(row.get("customer_avg_discount", 0)),
-
-            "purchase_rate": float(row.get("customer_purchase_rate", 0)),
-
-            "cart_rate": float(row.get("customer_cart_rate", 0)),
-
-            "abandonment_rate": float(row.get("customer_abandonment_rate", 0)),
-
-            "average_session_time": float(row.get("customer_avg_session_time", 0)),
-
-            "average_pages": float(row.get("customer_avg_pages", 0)),
-
-            "preferred_category": row.get("preferred_category"),
-
-            "customer_affinity_score": float(row.get("customer_affinity_score", 0.5)),
-
+        profile = {
+            "customer_id": int(row.get("customer_id", customer_id)),
+            "is_known": True,
+            "lifetime_value": round(lifetime_value, 2),
+            "purchase_count": purchase_count,
+            "average_discount_taken": round(average_discount_taken, 2),
+            "affinity_score": round(max(0.0, min(1.0, affinity_score)), 4),
+            "discount_dependence": round(max(0.0, min(1.0, discount_dependence)), 4),
+            "risk_profile": risk_profile,
+            "preferred_categories": preferred_categories,
+            "customer_affinity_score": round(max(0.0, min(1.0, affinity_score)), 4),
             "customer_buying_confidence": float(row.get("customer_buying_confidence", 0.5)),
-
-            "discount_dependence_score": float(row.get("discount_dependence_score", 0.25))
+            "discount_dependence_score": round(max(0.0, min(1.0, discount_dependence)), 4),
+            "preferred_category": preferred_categories[0] if preferred_categories else None,
         }
+
+        return profile
 
     def minmax(self, series):
         minimum = series.min()

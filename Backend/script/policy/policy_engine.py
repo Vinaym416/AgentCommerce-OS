@@ -2,8 +2,9 @@
 
 import json
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
+from script.database.repositories.product_repository import ProductRepository
 from script.policy.policy_models import (
     MerchantPolicy,
     ProductEconomics,
@@ -151,14 +152,77 @@ class PolicyEngine:
             evidence={"product_id": product.product_id},
         )
 
+    def evaluate_policy(
+        self,
+        customer_id: Optional[int] = None,
+        product_id: Optional[int] = None,
+        requested_discount: Optional[float] = None,
+        approved_discount: Optional[float] = None,
+        purchase_score: float = 0.0,
+        product_price: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Final gatekeeper for offer approval. Returns the agent-facing policy contract."""
+        discount_policy = self.policy.get("discount_policy", {})
+        max_discount = float(discount_policy.get("max_discount_percent", 20.0))
+        requires_high_intent = bool(discount_policy.get("discount_requires_high_intent", False))
+
+        if product_price is None and product_id is not None:
+            product_row = ProductRepository().get_by_product_id(int(product_id))
+            if product_row is not None:
+                product_price = float(product_row.get("current_price") or product_row.get("price") or 0.0)
+
+        product_price = float(product_price or 0.0)
+        requested_discount = max(float(requested_discount or 0.0), 0.0)
+        approved_discount = float(approved_discount if approved_discount is not None else requested_discount)
+
+        violations: List[str] = []
+
+        if product_price <= 0:
+            return {
+                "is_allowed": False,
+                "final_discount_percent": 0.0,
+                "final_price": 0.0,
+                "policy_violations": ["INVALID_PRODUCT_PRICE"],
+                "requires_approval": True,
+            }
+
+        if approved_discount > max_discount:
+            approved_discount = max_discount
+            violations.append("EXCEEDS_MAX_LIMIT")
+
+        if requires_high_intent and float(purchase_score or 0.0) < 0.60:
+            violations.append("LOW_PURCHASE_INTENT")
+
+        is_allowed = not violations
+        final_discount_percent = round(max(0.0, approved_discount), 2)
+        final_price = round(product_price * (1 - (final_discount_percent / 100.0)), 2)
+        requires_approval = (
+            bool(violations)
+            or final_discount_percent > float(self.merchant_policy.auto_approve_discount_percent)
+        )
+
+        return {
+            "is_allowed": is_allowed,
+            "final_discount_percent": final_discount_percent,
+            "final_price": final_price,
+            "policy_violations": violations,
+            "requires_approval": requires_approval,
+        }
+
     def evaluate_discount(self, product_price, requested_discount_percent, purchase_opportunity_score):
         discount_policy = self.policy["discount_policy"]
+        product_price = float(product_price or 0.0)
+        requested_discount_percent = float(requested_discount_percent or 0.0)
+        purchase_opportunity_score = float(purchase_opportunity_score or 0.0)
+
         if not discount_policy["enabled"]:
             return {"allowed": False, "approved_discount_percent": 0, "reason": "discount_disabled"}
-        max_discount = discount_policy["max_discount_percent"]
+
+        max_discount = float(discount_policy["max_discount_percent"])
         if discount_policy["discount_requires_high_intent"] and purchase_opportunity_score < 0.60:
             return {"allowed": False, "approved_discount_percent": 0, "reason": "insufficient_purchase_intent"}
-        approved = min(max(float(requested_discount_percent), 0.0), max_discount)
+
+        approved = min(max(requested_discount_percent, 0.0), max_discount)
         discount_amount = product_price * approved / 100
         reasons = [
             "requested_discount_exceeds_policy_limit"

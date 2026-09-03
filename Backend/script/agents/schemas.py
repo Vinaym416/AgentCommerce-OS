@@ -1,3 +1,4 @@
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Literal
 
 try:
@@ -142,15 +143,45 @@ class ProductCandidate:
 @dataclass
 class MerchantDecision:
 
-    merchant_action: str
+    decision: str = "REJECT_DISCOUNT"
 
     approved_discount_percent: float = 0.0
 
+    max_allowed_discount: float = 0.0
+
     negotiation_allowed: bool = False
+
+    margin_impact: float = 0.0
+
+    reason: str = ""
+
+    merchant_action: str = "REJECT_DISCOUNT"
 
     approval_status: str = "NOT_REQUIRED"
 
-    reason: str = ""
+    def __post_init__(self):
+        if not self.decision and self.merchant_action:
+            self.decision = self.merchant_action
+        if self.decision and not self.merchant_action:
+            self.merchant_action = self.decision
+        if self.reason and not self.reason.strip():
+            self.reason = "No reason provided."
+
+    @property
+    def decision_key(self):
+        return self.decision
+
+    @decision_key.setter
+    def decision_key(self, value):
+        self.decision = value
+
+    @property
+    def merchant_action_name(self):
+        return self.merchant_action
+
+    @merchant_action_name.setter
+    def merchant_action_name(self, value):
+        self.merchant_action = value
 
 
 # ============================================================

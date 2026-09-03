@@ -11,17 +11,56 @@ class ProductRetriever:
     def __init__(self, repository=None):
         self.repository = repository or ProductRepository()
 
+    @staticmethod
+    def _normalize_product_row(row):
+        price = float(row.get("current_price") or row.get("price") or 0.0)
+        cost_price = row.get("cost_price")
+        if cost_price is None:
+            cost_price = row.get("base_cost") or row.get("cost") or (price * 0.6)
+        cost_price = float(cost_price)
+
+        popularity = row.get("popularity_score")
+        if popularity is None:
+            popularity = row.get("product_score") or row.get("demand_score") or row.get("conversion_rate") or 0.0
+
+        margin_percent = 0.0
+        if price > 0:
+            margin_percent = ((price - cost_price) / price) * 100
+
+        category = row.get("category") or row.get("product_category") or row.get("category_name") or "general"
+
+        return {
+            "product_id": int(row.get("product_id")),
+            "name": row.get("name") or row.get("product_name") or f"Product {row.get('product_id')}",
+            "price": round(price, 2),
+            "cost_price": round(cost_price, 2),
+            "stock_quantity": int(row.get("stock_quantity") or row.get("stock") or row.get("inventory") or 0),
+            "category": category,
+            "margin_percent": round(float(margin_percent), 2),
+            "popularity_score": round(float(popularity), 4),
+        }
+
     # --------------------------------------------------------
     # Retrieve products
     # --------------------------------------------------------
 
     def search(
         self,
+        intent=None,
+        customer_context=None,
+        limit=5,
         budget=None,
         category=None,
         min_rating=None,
-        limit=None
     ):
+        if isinstance(intent, dict):
+            budget = intent.get("budget_max") or intent.get("budget") or budget
+            category = intent.get("product_category") or category
+
+        if isinstance(customer_context, dict):
+            customer_categories = customer_context.get("preferred_categories") or []
+            if category is None and customer_categories:
+                category = customer_categories[0]
 
         products = self.repository.search(
             budget=budget,
@@ -30,11 +69,12 @@ class ProductRetriever:
             limit=limit,
         )
 
-        return pd.DataFrame(products)
+        return [self._normalize_product_row(row) for row in products]
 
     def get_by_product_id(self, product_id):
         """Retrieve one product without applying recommendation ranking."""
-        return self.repository.get_by_product_id(int(product_id))
+        row = self.repository.get_by_product_id(int(product_id))
+        return self._normalize_product_row(row) if row is not None else None
 
     # --------------------------------------------------------
     # Display results
@@ -53,7 +93,7 @@ class ProductRetriever:
         print("PRODUCT RECOMMENDATIONS")
         print("=" * 80)
 
-        for _, product in results.iterrows():
+        for product in results:
 
             print()
             print(
@@ -63,32 +103,22 @@ class ProductRetriever:
 
             print(
                 f"Category         : "
-                f"{product['category_name']}"
+                f"{product['category']}"
             )
 
             print(
                 f"Price            : "
-                f"₹{product['current_price']:.2f}"
+                f"₹{product['price']:.2f}"
             )
 
             print(
-                f"Rating           : "
-                f"{product['avg_rating']:.2f}/5"
+                f"Margin %         : "
+                f"{product['margin_percent']:.2f}%"
             )
 
             print(
-                f"Conversion Rate  : "
-                f"{product['conversion_rate']:.2%}"
-            )
-
-            print(
-                f"Demand Score     : "
-                f"{product['demand_score']:.3f}"
-            )
-
-            print(
-                f"Product Score    : "
-                f"{product['product_score']:.3f}"
+                f"Popularity Score : "
+                f"{product['popularity_score']:.3f}"
             )
 
 

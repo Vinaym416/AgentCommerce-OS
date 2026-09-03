@@ -50,11 +50,15 @@ class TransactionState:
 
     original_price: float = 0.0
 
+    price: float = 0.0
+
     negotiated_price: float = 0.0
 
     final_price: float = 0.0
 
     discount_percent: float = 0.0
+
+    discount: float = 0.0
 
     currency: str = "INR"
 
@@ -66,7 +70,13 @@ class TransactionState:
 
     status: str = "NO_TRANSACTION"
 
+    created_at: str = ""
+
     updated_at: str = ""
+
+    expires_at: str = ""
+
+    is_active: bool = True
 
     customer_accepted: bool = False
 
@@ -93,14 +103,34 @@ class TransactionState:
     def __post_init__(self):
         if not self.transaction_id:
             self.transaction_id = "TRX-" + uuid4().hex[:12].upper()
+        if not self.created_at:
+            self.created_at = datetime.now(timezone.utc).isoformat()
         if not self.updated_at:
-            self.updated_at = datetime.now(timezone.utc).isoformat()
-        
-        # Ensure negotiated_price is set to original_price if not explicitly set
+            self.updated_at = self.created_at
+        if not self.expires_at:
+            created_time = datetime.fromisoformat(self.created_at.replace("Z", "+00:00"))
+            self.expires_at = (created_time.replace(microsecond=0) if created_time.tzinfo else created_time).isoformat()
+
+        if self.price > 0 and self.original_price == 0:
+            self.original_price = self.price
+        if self.original_price > 0 and self.price == 0:
+            self.price = self.original_price
+        if self.discount > 0 and self.discount_percent == 0:
+            self.discount_percent = self.discount
+        if self.discount_percent > 0 and self.discount == 0:
+            self.discount = self.discount_percent
+
         if self.negotiated_price == 0.0 and self.original_price > 0.0:
             self.negotiated_price = self.original_price
-        
-        # Ensure final_price reflects the negotiated price with discount applied
+
         if self.final_price == 0.0 and self.negotiated_price > 0.0:
             discount_amount = self.negotiated_price * (self.discount_percent / 100.0)
             self.final_price = self.negotiated_price - discount_amount
+
+        if self.status in {"OFFER_CREATED", "COUNTER_OFFERED", "CHECKOUT_READY", "PAYMENT_PENDING", "PAYMENT_AUTHORIZED"}:
+            self.is_active = True
+        elif self.status in {"FAILED", "PAYMENT_FAILED", "CHECKOUT_FAILED", "ORDER_FAILED", "COMPLETED"}:
+            self.is_active = False
+
+        if self.expires_at and self.status in {"PAID", "PAYMENT_CAPTURED", "ORDER_CREATED", "COMPLETED", "FAILED"}:
+            self.is_active = False

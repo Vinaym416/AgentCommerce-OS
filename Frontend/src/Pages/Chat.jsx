@@ -19,6 +19,7 @@ export default function Chat() {
   const [messages, setMessages] = useState([WELCOME_MESSAGE]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [negotiationContext, setNegotiationContext] = useState({});
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -52,10 +53,29 @@ export default function Chat() {
         message: text,
         customer_id: CUSTOMER_ID,
 
+        ...negotiationContext,
         ...context,
 
         execute_payment: false,
       });
+
+      const responseProductId =
+        response?.product_id ??
+        response?.offer?.product_id ??
+        response?.transaction?.product_id ??
+        response?.products?.[0]?.product_id;
+      const responseTransactionId =
+        response?.offer?.transaction_id ??
+        response?.transaction?.transaction_id;
+
+      if (response?.action === "NEGOTIATION_AMOUNT_REQUIRED" && responseProductId != null) {
+        setNegotiationContext({
+          product_id: responseProductId,
+          ...(responseTransactionId ? { transaction_id: responseTransactionId } : {}),
+        });
+      } else if (response?.offer || response?.transaction) {
+        setNegotiationContext({});
+      }
 
       setMessages((prev) => [
         ...prev,
@@ -113,6 +133,7 @@ export default function Chat() {
      * USER SELECTS PRODUCT
      */
     if (action === "select_product") {
+      setNegotiationContext({ product_id: productId });
       setMessages((prev) => [
         ...prev,
         {
@@ -221,6 +242,7 @@ export default function Chat() {
   function resetChat() {
     setMessages([WELCOME_MESSAGE]);
     setInput("");
+    setNegotiationContext({});
   }
 
   return (
