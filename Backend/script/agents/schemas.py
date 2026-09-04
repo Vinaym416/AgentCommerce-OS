@@ -29,6 +29,7 @@ if ConfigDict is not None:
 
         product_preferences: List[str] = Field(default_factory=list)
         constraints: List[str] = Field(default_factory=list)
+        result_limit: Optional[int] = None
 
         @property
         def budget(self) -> Optional[float]:
@@ -75,6 +76,7 @@ else:
 
         product_preferences: List[str] = []
         constraints: List[str] = []
+        result_limit: Optional[int] = None
 
         class Config:
             extra = "ignore"

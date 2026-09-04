@@ -1,3 +1,5 @@
+import { useState } from "react";
+
 function ProductCard({
   product,
   data,
@@ -28,6 +30,10 @@ function ProductCard({
     product.image_url ||
     product.image ||
     product.thumbnail;
+
+  const [quantity, setQuantity] = useState(
+    Math.min(10, Math.max(1, Number(product.quantity || 1)))
+  );
 
   return (
     <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 transition hover:border-violet-500/40">
@@ -82,6 +88,32 @@ function ProductCard({
 
         </div>
 
+        {/* QUANTITY */}
+        <div className="mb-4 flex items-center justify-between rounded-xl border border-slate-800 bg-slate-900 px-3 py-2">
+          <span className="text-xs text-slate-400">Quantity</span>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              disabled={quantity <= 1}
+              onClick={() => setQuantity((value) => Math.max(1, value - 1))}
+              className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-700 text-slate-300 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              -
+            </button>
+            <span className="min-w-[20px] text-center text-sm font-medium text-white">
+              {quantity}
+            </span>
+            <button
+              type="button"
+              disabled={quantity >= 10}
+              onClick={() => setQuantity((value) => Math.min(10, value + 1))}
+              className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-700 text-slate-300 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              +
+            </button>
+          </div>
+        </div>
+
         {/* ACTIONS */}
         <div className="grid grid-cols-2 gap-2">
 
@@ -89,7 +121,7 @@ function ProductCard({
             onClick={() =>
               onAction(
                 "select_product",
-                product,
+                { ...product, quantity },
                 data
               )
             }
@@ -102,7 +134,7 @@ function ProductCard({
             onClick={() =>
               onAction(
                 "negotiate",
-                product,
+                { ...product, quantity },
                 data
               )
             }

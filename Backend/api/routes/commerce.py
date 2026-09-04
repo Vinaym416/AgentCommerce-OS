@@ -209,6 +209,18 @@ def get_commerce_session(
 
     return {
         "transaction_id": resolved_transaction_id,
+        "transaction_status": (
+            transaction.status
+            if transaction else None
+        ),
+        "payment_status": (
+            transaction.payment_status
+            if transaction else None
+        ),
+        "order_id": (
+            transaction.order_id
+            if transaction else None
+        ),
         "product": {
             "product_id": product_id,
             "name": product.get("name", "Premium Product"),
@@ -242,6 +254,8 @@ def create_payment_order(
 
     if request.quantity < 1:
         raise HTTPException(status_code=400, detail="quantity must be at least 1")
+    if request.quantity > 10:
+        raise HTTPException(status_code=400, detail="quantity must be at most 10")
 
     agent = _get_execution_agent()
 

@@ -27,6 +27,7 @@ Return ONLY valid JSON with these keys:
   "discount_value": number or null,
   "urgency": "low | medium | high",
   "confidence_score": number between 0 and 1,
+    "result_limit": integer or null,
   "product_preferences": [],
   "constraints": []
 }
@@ -44,15 +45,29 @@ Do not approve or promise discounts. Extract only information present in the cus
 
     @staticmethod
     def _extract_discount(text: str):
-        if not any(token in text for token in ("discount", "off", "%", "cheaper", "deal", "better price")):
+        discount_pattern = (
+            r"\bdiscount\b|\boff\b|%|\bcheaper\b|\bdeal\b|"
+            r"\bbetter\s+price\b|\bnegotiate\b"
+        )
+        if not re.search(discount_pattern, text, flags=re.IGNORECASE):
             return None
         matches = re.findall(r"(\d{1,2})\s*(?:%|percent)", text)
         return float(max(matches)) if matches else 0.0
+
+    @staticmethod
+    def _extract_result_limit(text: str):
+        match = re.search(
+            r"\b(?:show|give|find|list)\s+(?:me\s+)?(\d+)\s+(?:options?|products?|items?)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+        return max(1, min(50, int(match.group(1)))) if match else None
 
     def _normalize(self, parsed: dict, message: str) -> dict:
         text = message.lower()
         budget = parsed.get("budget_max") or parsed.get("budget") or self._extract_budget(text)
         discount = self._extract_discount(text)
+        result_limit = parsed.get("result_limit") or self._extract_result_limit(text)
         urgency = parsed.get("urgency") or "medium"
         if urgency == "normal":
             urgency = "medium"
@@ -80,6 +95,10 @@ Do not approve or promise discounts. Extract only information present in the cus
         intent = str(parsed.get("intent") or "PRODUCT_SEARCH").upper()
         if intent in {"PURCHASE", "BROWSE", "COMPARE", "UNCLEAR"}:
             intent = {"PURCHASE": "PRODUCT_SEARCH", "BROWSE": "BROWSE", "COMPARE": "PRODUCT_SEARCH", "UNCLEAR": "PRODUCT_SEARCH"}[intent]
+        if any(token in text for token in ("cheap", "cheapest", "budget-friendly")) and budget is None:
+            parsed.setdefault("product_preferences", []).append("low_price")
+        if any(token in text for token in ("good discount", "best discount", "great discount")):
+            discount_requested = True
         print(f"Output from MiniMax Buyer Agent: {parsed}")
         return {
             "intent": intent,
@@ -89,6 +108,7 @@ Do not approve or promise discounts. Extract only information present in the cus
             "product_category": parsed.get("product_category") or "general",
             "discount_requested": bool(discount_requested),
             "discount_value": discount_value,
+            "result_limit": result_limit,
             "urgency": urgency,
             "confidence_score": confidence,
             "product_preferences": parsed.get("product_preferences") or [],

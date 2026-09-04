@@ -50,12 +50,28 @@ class ProductRetriever:
         customer_context=None,
         limit=5,
         budget=None,
+        min_budget=None,
         category=None,
         min_rating=None,
     ):
         if isinstance(intent, dict):
             budget = intent.get("budget_max") or intent.get("budget") or budget
+            min_budget = intent.get("budget_min") or min_budget
             category = intent.get("product_category") or category
+        elif intent is not None:
+            budget = getattr(intent, "budget", None) or budget
+            min_budget = getattr(intent, "budget_min", None) or min_budget
+            category = getattr(intent, "product_category", None) or category
+
+        if str(category or "").strip().lower() in {
+            "",
+            "general",
+            "unspecified",
+            "unknown",
+            "null",
+            "none",
+        }:
+            category = None
 
         if isinstance(customer_context, dict):
             customer_categories = customer_context.get("preferred_categories") or []
@@ -64,12 +80,21 @@ class ProductRetriever:
 
         products = self.repository.search(
             budget=budget,
+            min_budget=min_budget,
             category=category,
             min_rating=min_rating,
             limit=limit,
         )
 
-        return [self._normalize_product_row(row) for row in products]
+        normalized = [self._normalize_product_row(row) for row in products]
+        product_preferences = (
+            intent.get("product_preferences")
+            if isinstance(intent, dict)
+            else getattr(intent, "product_preferences", [])
+        )
+        if "low_price" in (product_preferences or []):
+            normalized.sort(key=lambda product: product["price"])
+        return normalized
 
     def get_by_product_id(self, product_id):
         """Retrieve one product without applying recommendation ranking."""

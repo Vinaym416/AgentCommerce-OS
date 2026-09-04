@@ -50,6 +50,7 @@ def chat(request: ChatRequest):
         result = agent.process(
             message=request.message,
             customer_id=request.customer_id,
+            quantity=request.quantity,
             product_id=request.product_id,
             transaction_id=request.transaction_id,
             negotiation_requested=request.negotiation_requested,

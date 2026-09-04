@@ -13,14 +13,20 @@ class ProductRepository:
     def search(
         self,
         budget: Optional[float] = None,
+        min_budget: Optional[float] = None,
         category: Optional[Any] = None,
         min_rating: Optional[float] = None,
         limit: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         query: Dict[str, Any] = {}
 
-        if budget is not None:
-            query["current_price"] = {"$lte": float(budget)}
+        if budget is not None or min_budget is not None:
+            price_filter: Dict[str, float] = {}
+            if min_budget is not None:
+                price_filter["$gte"] = float(min_budget)
+            if budget is not None:
+                price_filter["$lte"] = float(budget)
+            query["current_price"] = price_filter
 
         if category is not None:
             query["$or"] = [

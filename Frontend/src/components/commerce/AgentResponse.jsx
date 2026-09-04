@@ -3,6 +3,18 @@ import { useEffect, useState } from "react";
 import ProductCard from "../ProductCard";
 
 const PAGE_SIZE = 10;
+const CART_STORAGE_KEY = "agentcommerce-cart";
+
+function cartContainsProduct(productId) {
+  try {
+    const cart = JSON.parse(localStorage.getItem(CART_STORAGE_KEY) || "[]");
+    return Array.isArray(cart) && cart.some(
+      (item) => String(item.product_id) === String(productId)
+    );
+  } catch {
+    return false;
+  }
+}
 
 export default function AgentResponse({ data, onAction }) {
 
@@ -71,6 +83,10 @@ export default function AgentResponse({ data, onAction }) {
         : null
     );
 
+  if (action === "OFFER_ACCEPTED") {
+    return <AcceptedOffer data={data} onAction={onAction} />;
+  }
+
   /*
    * Product detail should win over generic product lists.
    */
@@ -87,10 +103,6 @@ export default function AgentResponse({ data, onAction }) {
         onAction={onAction}
       />
     );
-  }
-
-  if (action === "OFFER_ACCEPTED") {
-    return <AcceptedOffer data={data} onAction={onAction} />;
   }
 
   /*
@@ -226,6 +238,29 @@ export default function AgentResponse({ data, onAction }) {
    ============================================================ */
 
 function NegotiationInputRequired({ data, onAction }) {
+  const product = data?.product || data?.products?.[0] || {};
+  const offer = data?.offer || {};
+  const currentPrice = Number(
+    offer.original_price ??
+    product.price ??
+    product.current_price ??
+    data?.transaction?.original_price ??
+    0
+  );
+  const step = currentPrice >= 1000 ? 100 : 50;
+  const roundedTarget = Math.max(step, Math.ceil(currentPrice / step) * step);
+  const roundedBudget = Math.max(
+    step,
+    Math.round(currentPrice / step) * step
+  );
+  const suggestions = currentPrice > 0
+    ? [
+        `₹${roundedTarget}`,
+        `Rupees ${roundedBudget}`,
+        `Discount of ${roundedBudget}`,
+        "10% off",
+      ]
+    : ["10% off"];
 
   return (
     <div className="space-y-4">
@@ -246,7 +281,7 @@ function NegotiationInputRequired({ data, onAction }) {
       </div>
 
       <div className="grid gap-2 sm:grid-cols-2">
-        {["₹300", "Rupees 300", "Discount of 300", "10% off"].map((suggestion) => (
+        {suggestions.map((suggestion) => (
           <button
             key={suggestion}
             type="button"
@@ -391,6 +426,9 @@ function ProductDetail({
   product,
   onAction,
 }) {
+  const [quantity, setQuantity] = useState(
+    Math.min(10, Math.max(1, Number(product?.quantity || 1)))
+  );
 
   const productId =
     product?.product_id ??
@@ -427,6 +465,18 @@ function ProductDetail({
     product?.name ??
     product?.product_name ??
     `Product ${productId}`;
+  const [inCart, setInCart] = useState(() => cartContainsProduct(productId));
+
+  function handleBuyAction() {
+    if (inCart) {
+      onAction?.("remove_from_cart", { product_id: productId }, data);
+      setInCart(false);
+      return;
+    }
+
+    onAction?.("add_to_cart", { ...product, quantity, price }, data);
+    setInCart(true);
+  }
 
   return (
     <div className="max-w-2xl space-y-5">
@@ -499,6 +549,32 @@ function ProductDetail({
 
           </div>
 
+          <div className="mt-5 flex items-center justify-between rounded-xl border border-slate-800 bg-slate-900 px-3 py-2">
+            <span className="text-xs text-slate-400">Quantity</span>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                disabled={quantity <= 1}
+                onClick={() => setQuantity((value) => Math.max(1, value - 1))}
+                className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-700 text-slate-300 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                -
+              </button>
+              <span className="min-w-[24px] text-center text-sm font-medium text-white">
+                {quantity}
+              </span>
+              <button
+                type="button"
+                disabled={quantity >= 10}
+                onClick={() => setQuantity((value) => Math.min(10, value + 1))}
+                className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-700 text-slate-300 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                +
+              </button>
+            </div>
+          </div>
+
+
           <div className="mt-6 rounded-xl border border-slate-800 bg-slate-900 p-4">
 
             <p className="text-xs font-medium text-slate-400">
@@ -517,7 +593,7 @@ function ProductDetail({
               onClick={() =>
                 onAction?.(
                   "negotiate",
-                  product,
+                  { ...product, quantity },
                   data
                 )
               }
@@ -527,22 +603,16 @@ function ProductDetail({
             </button>
 
             <button
-              onClick={() =>
-                onAction?.(
-                  "buy_now",
-                  product,
-                  data
-                )
-              }
-              className="rounded-xl bg-violet-600 px-4 py-3 text-sm font-medium text-white transition hover:bg-violet-500"
+              onClick={handleBuyAction}
+              className={`rounded-xl px-4 py-3 text-sm font-medium text-white transition ${
+                inCart
+                  ? "border border-slate-700 bg-slate-800 hover:bg-slate-700"
+                  : "bg-violet-600 hover:bg-violet-500"
+              }`}
             >
-              Buy at ₹
-              {price.toLocaleString(
-                "en-IN",
-                {
-                  maximumFractionDigits: 2,
-                }
-              )}
+              {inCart
+                ? "Remove from cart"
+                : `Buy at ₹${price.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`}
             </button>
 
           </div>
@@ -678,7 +748,12 @@ function NegotiationResponse({
   const maximumReached =
     data?.action === "MAX_DISCOUNT_REACHED" ||
     offer.is_final_offer === true ||
-    offeredDiscount >= maximumDiscount;
+    offeredDiscount >= maximumDiscount ||
+    (
+      offer.negotiation_round != null &&
+      offer.max_negotiation_rounds != null &&
+      Number(offer.negotiation_round) >= Number(offer.max_negotiation_rounds)
+    );
 
   return (
     <div className="space-y-5">
@@ -901,7 +976,54 @@ function AcceptedOffer({ data, onAction }) {
     offer.final_price ?? offer.amount ?? offer.price ?? 0
   );
   const productId = offer.product_id ?? product.product_id ?? data?.product_id;
+  const [inCart, setInCart] = useState(() => cartContainsProduct(productId));
   const totalPrice = finalPrice * quantity;
+  const currentCategory =
+    offer.category ??
+    product.category ??
+    product.category_name;
+  const normalizeCategory = (value) =>
+    String(value ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/^category\s+/, "");
+  const crossSell = (Array.isArray(data?.products) ? data.products : [])
+    .filter((candidate) => {
+      const candidateId = candidate?.product_id ?? candidate?.id;
+      const candidateCategory = candidate?.category ?? candidate?.category_name;
+      return (
+        String(candidateId) !== String(productId) &&
+        (!currentCategory || !candidateCategory ||
+          normalizeCategory(candidateCategory) === normalizeCategory(currentCategory))
+      );
+    })
+    .sort(
+      (left, right) =>
+        Number(right?.product_score ?? right?.match_score ?? 0) -
+        Number(left?.product_score ?? left?.match_score ?? 0)
+    )[0];
+
+  function addAcceptedOfferToCart() {
+    if (inCart) {
+      onAction?.("remove_from_cart", { product_id: productId }, data);
+      setInCart(false);
+      return;
+    }
+    onAction?.(
+      "add_to_cart",
+      {
+        ...product,
+        ...offer,
+        product_id: productId,
+        name: offer.name || product.name,
+        category: offer.category || product.category,
+        final_price: finalPrice,
+        quantity,
+      },
+      data
+    );
+      setInCart(true);
+  }
 
   return (
     <div className="space-y-4">
@@ -929,8 +1051,9 @@ function AcceptedOffer({ data, onAction }) {
             <span className="min-w-[24px] text-center text-sm font-medium text-white">{quantity}</span>
             <button
               type="button"
-              onClick={() => setQuantity((value) => value + 1)}
-              className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-700 text-slate-300 transition hover:bg-slate-800"
+              disabled={quantity >= 10}
+              onClick={() => setQuantity((value) => Math.min(10, value + 1))}
+              className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-700 text-slate-300 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
             >
               +
             </button>
@@ -939,11 +1062,33 @@ function AcceptedOffer({ data, onAction }) {
         <p className="mt-3 text-sm text-slate-400">
           Total: <span className="font-semibold text-white">₹{totalPrice.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</span>
         </p>
+        {crossSell && (
+          <div className="mt-5 rounded-xl border border-slate-800 bg-slate-950 p-4">
+            <p className="text-xs font-medium text-slate-400">
+              You might also like
+            </p>
+            <p className="mt-2 text-sm font-medium text-white">
+              {crossSell.name || crossSell.product_name || `Product ${crossSell.product_id ?? crossSell.id}`}
+            </p>
+            <p className="mt-1 text-xs leading-5 text-slate-500">
+              Since you&apos;re buying {product.name || `Product ${productId}`}, this is another option in the same category.
+            </p>
+            {(crossSell.price ?? crossSell.current_price) != null && (
+              <p className="mt-2 text-sm text-slate-300">
+                ₹{Number(crossSell.price ?? crossSell.current_price).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+              </p>
+            )}
+          </div>
+        )}
         <button
-          onClick={() => onAction?.("proceed_to_payment", { ...offer, quantity }, { ...data, quantity })}
-          className="mt-5 w-full rounded-xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-500"
+          onClick={addAcceptedOfferToCart}
+          className={`mt-5 w-full rounded-xl px-4 py-3 text-sm font-semibold text-white ${
+            inCart
+              ? "border border-slate-700 bg-slate-800 hover:bg-slate-700"
+              : "bg-emerald-600 hover:bg-emerald-500"
+          }`}
         >
-          Proceed to Checkout
+          {inCart ? "Remove from cart" : "Accept and add to cart"}
         </button>
       </div>
     </div>

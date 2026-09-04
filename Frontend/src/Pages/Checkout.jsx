@@ -1,18 +1,32 @@
 
 import { useEffect, useState } from "react";
-import { useLocation } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { API_BASE_URL } from "../lib/api";
 
 export default function Checkout() {
   const location = useLocation();
+  const navigate = useNavigate();
   const transactionId = location.state?.transactionId;
+  const chatSessionId = location.state?.chatSessionId;
   const requestedQuantity = Math.max(1, Number(location.state?.quantity ?? 1));
   const acceptedOffer = location.state?.commerceData?.offer || {};
   const [loading, setLoading] = useState(false);
   const [sessionLoading, setSessionLoading] = useState(true);
   const [status, setStatus] = useState("");
   const [paymentResponse, setPaymentResponse] = useState(null);
+  const [paymentCompleted, setPaymentCompleted] = useState(false);
   const [session, setSession] = useState(null);
+
+  function handleCancelCheckout() {
+    setLoading(false);
+    setStatus("Checkout cancelled.");
+    navigate(
+      chatSessionId
+        ? `/commerce/chat/session/${chatSessionId}`
+        : "/",
+      { replace: true }
+    );
+  }
 
   useEffect(() => {
     const loadSession = async () => {
@@ -35,6 +49,18 @@ export default function Checkout() {
         }
 
         setSession(data);
+        setPaymentCompleted(
+          [
+            "PAYMENT_CAPTURED",
+            "PAYMENT_SUCCESS",
+            "ORDER_CREATED",
+            "COMPLETED",
+          ].includes(data?.transaction_status) ||
+          ["PAID", "PAYMENT_CAPTURED", "PAYMENT_SUCCESS"].includes(
+            data?.payment_status
+          ) ||
+          Boolean(data?.order_id)
+        );
       } catch (error) {
         console.error("Session Error:", error);
         setStatus(error.message || "Unable to load AI-negotiated offer.");
@@ -195,6 +221,7 @@ export default function Checkout() {
             setPaymentResponse(verifyData);
 
             if (verifyData?.final_action === "ORDER_CREATED") {
+              setPaymentCompleted(true);
               setStatus("Payment verified. Order created successfully.");
             } else {
               setStatus("Payment completed. Verification pending...");
@@ -458,13 +485,44 @@ export default function Checkout() {
 
             <div className="mt-auto pt-10">
 
-              <button
-                onClick={handlePayment}
-                disabled={loading}
-                className="w-full rounded-2xl bg-indigo-500 px-6 py-4 text-sm font-semibold text-white shadow-lg shadow-indigo-500/20 transition hover:bg-indigo-400 hover:shadow-indigo-500/30 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {loading ? "Creating Secure Order..." : `Pay ₹${totalFinalPrice.toFixed(2)}`}
-              </button>
+              {paymentCompleted ? (
+                <div className="space-y-3">
+                  <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 px-6 py-4 text-center text-sm font-semibold text-emerald-300">
+                    Payment completed successfully.
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      navigate(
+                        chatSessionId
+                          ? `/commerce/chat/session/${chatSessionId}`
+                          : "/"
+                      )
+                    }
+                    className="w-full rounded-2xl bg-indigo-500 px-6 py-4 text-sm font-semibold text-white shadow-lg shadow-indigo-500/20 transition hover:bg-indigo-400 hover:shadow-indigo-500/30"
+                  >
+                    Order more products
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <button
+                    onClick={handlePayment}
+                    disabled={loading}
+                    className="w-full rounded-2xl bg-indigo-500 px-6 py-4 text-sm font-semibold text-white shadow-lg shadow-indigo-500/20 transition hover:bg-indigo-400 hover:shadow-indigo-500/30 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {loading ? "Creating Secure Order..." : `Pay ₹${totalFinalPrice.toFixed(2)}`}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCancelCheckout}
+                    disabled={loading}
+                    className="w-full rounded-2xl border border-slate-700 px-6 py-4 text-sm font-semibold text-slate-300 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
 
               {/* STATUS */}
 

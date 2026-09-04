@@ -1534,6 +1534,7 @@ class CommerceAgent:
         self,
         message: str,
         customer_id: Optional[int] = None,
+        quantity: int = 1,
         product_id: Optional[int] = None,
         transaction_id: Optional[str] = None,
         negotiation_requested: bool = False,
@@ -1548,6 +1549,9 @@ class CommerceAgent:
             raise ValueError(
                 "Customer message cannot be empty."
             )
+
+        if quantity < 1 or quantity > 10:
+            raise ValueError("quantity must be between 1 and 10")
 
         trace: List[str] = []
         session = (
@@ -1593,10 +1597,16 @@ class CommerceAgent:
             self.memory.reset_product_selection(customer_id)
 
         transaction = None
-        if transaction_id:
+        if transaction_id and not is_new_search:
             transaction = self.transaction_manager.get_by_transaction_id(transaction_id)
-        if transaction is None and customer_id is not None:
+        if transaction is None and customer_id is not None and not is_new_search:
             transaction = self.transaction_manager.get(customer_id)
+        if (
+            transaction is not None
+            and product_id is not None
+            and int(transaction.product_id or 0) != int(product_id)
+        ):
+            transaction = None
 
         pending_offer = (
             self.memory.get_pending_offer(customer_id)
@@ -1654,6 +1664,10 @@ class CommerceAgent:
         reuse_session_context = (
             session_product is not None
             and not is_new_search
+            and (
+                product_id is None
+                or int(session_product.product_id) == int(product_id)
+            )
             and (
                 product_id is not None
                 or self._is_product_reference(message)
@@ -1823,8 +1837,20 @@ class CommerceAgent:
         else:
             product_rows = (
                 self.product_retriever.search(
+                    intent=intent,
                     budget=intent.budget,
-                    limit=None
+                    min_budget=intent.budget_min,
+                    category=(
+                        intent.product_category
+                        if intent.product_category
+                        and intent.product_category.lower() not in {
+                            "general",
+                            "unspecified",
+                            "unknown",
+                        }
+                        else None
+                    ),
+                    limit=intent.result_limit or 5,
                 )
             )
 
@@ -1887,6 +1913,28 @@ class CommerceAgent:
         if requested_discount is not None and float(requested_discount) <= 0:
             requested_discount = None
         target_price = self._extract_target_price(message)
+        if target_price is not None and target_price > top_product.current_price:
+            intent.discount_requested = False
+            trace.extend([
+                "TARGET_PRICE_ABOVE_PRODUCT_PRICE",
+                "NO_DISCOUNT_REQUEST",
+                "FINAL_DECISION",
+            ])
+            return self._build_response(
+                intent=intent,
+                customer=customer,
+                products=[top_product],
+                merchant_decision=None,
+                negotiation=None,
+                checkout=None,
+                payment=None,
+                order=None,
+                policy_result=None,
+                final_action="PRICE_ABOVE_PRODUCT",
+                trace=trace,
+                purchase_score=0.0,
+                discount_score=0.0,
+            )
         customer_supplied_discount = (
             requested_discount is not None
             and float(requested_discount or 0.0) > 0.0
@@ -2329,6 +2377,19 @@ class CommerceAgent:
             merchant_decision.decision = "COUNTER_OFFER"
             merchant_decision.negotiation_allowed = False
 
+        target_below_safe_price = (
+            target_price is not None
+            and float(target_price) < float(policy_result.get("final_price", top_product.current_price))
+        )
+        if target_price is not None:
+            policy_result["requested_price"] = round(float(target_price), 2)
+        if target_below_safe_price:
+            policy_result["reason"] = (
+                f"I can't go as low as ₹{float(target_price):,.2f}. "
+                f"The best price I'm allowed to offer is ₹{float(policy_result['final_price']):,.2f}."
+            )
+            policy_result["reasons"] = [policy_result["reason"]]
+
         if customer_id is not None:
             self.memory.set_policy_result(policy_result, customer_id)
 
@@ -2355,6 +2416,8 @@ class CommerceAgent:
                 )
             )
         )
+        if target_below_safe_price:
+            final_action = "COUNTER_OFFER"
 
         # ----------------------------------------------------
         # 10. CHECKOUT
@@ -2385,7 +2448,12 @@ class CommerceAgent:
                 ),
                 status=transaction_status,
                 negotiation_round=(
-                    (transaction.negotiation_round if transaction else 0) + 1
+                    (
+                        transaction.negotiation_round
+                        if transaction
+                        and transaction.product_id == top_product.product_id
+                        else 0
+                    ) + 1
                 ),
             )
 
@@ -2498,22 +2566,13 @@ class CommerceAgent:
         text = " ".join(message.lower().strip().split())
         if not text:
             return False
-        discount_phrases = {
-            "discount",
-            "off",
-            "% off",
-            "percent off",
-            "cheaper",
-            "price",
-            "save",
-            "reduce",
-            "negotiate",
-            "negotiation",
-            "better price",
-        }
-        return (
-            any(phrase in text for phrase in discount_phrases)
-            or "%" in text
+        return bool(
+            re.search(
+                r"\b(?:discount|off|cheaper|price|save|reduce|negotiate|negotiation)\b"
+                r"|\bbetter\s+price\b|%",
+                text,
+                flags=re.IGNORECASE,
+            )
         )
 
     @staticmethod
@@ -2531,11 +2590,14 @@ class CommerceAgent:
     @staticmethod
     def _extract_target_price(message: str) -> Optional[float]:
         match = re.search(
-            r"(?:price|pay|for|at)\s*(?:inr|rs|₹)?\s*([0-9][0-9,]*)\b",
+            r"(?:price|pay|for|at|rupees?|inr|rs|₹)\s*(?:inr|rs|₹|rupees?)?\s*([0-9][0-9,]*)\b|\b([0-9][0-9,]*)\s*(?:rupees?|inr|rs)\b",
             message.lower(),
             re.IGNORECASE,
         )
-        return float(match.group(1).replace(",", "")) if match else None
+        if not match:
+            return None
+        value = match.group(1) or match.group(2)
+        return float(value.replace(",", ""))
 
     def _is_new_catalog_search(self, message: str) -> bool:
         text = " ".join(message.lower().strip().split())
@@ -2640,9 +2702,9 @@ class CommerceAgent:
         round_index = max(0, int(negotiation_round))
 
         if maximum <= 9.0:
-            discounts = (maximum - 1.0, maximum - 1.5)
+            discounts = (maximum - 1.5, maximum - 1.0)
         elif maximum <= 15.0:
-            discounts = (maximum - 1.0, maximum - 2.0, maximum - 2.5)
+            discounts = (maximum - 2.5, maximum - 2.0, maximum - 1.0)
         else:
             discounts = tuple(2.0 ** (index + 1) for index in range(4))
 
@@ -3071,9 +3133,11 @@ class CommerceAgent:
                 "MAX_DISCOUNT_REACHED": "This product can only be discounted by the amount shown. That is my maximum offer.",
                 "NEGOTIATION_INPUT_REQUIRED": "Tell me the maximum discount percentage or target price you need for this product.",
                     "NEGOTIATION_AMOUNT_REQUIRED": "Tell me what discount percentage you want, and I will try to get you the best price.",
+                "PRICE_ABOVE_PRODUCT": "You are offering more than this product costs. I can give you the true price .",
                 "PAYMENT_PENDING": "Great. Your checkout is ready.",
                 "CHECKOUT_READY": "Great. Your checkout is ready.",
                 "ORDER_CREATED": "Your payment was confirmed and your order was created.",
+                "NO_PRODUCT_MATCH": "I couldn't find products matching that request. Try a higher budget or a different product type.",
             }.get(final_action, "I've processed your request."),
 
             "customer": {
@@ -3119,6 +3183,8 @@ class CommerceAgent:
                 "constraints": (
                     intent.constraints
                 ),
+
+                "result_limit": intent.result_limit,
 
                 "confidence": intent.confidence
             },
@@ -3300,6 +3366,19 @@ class CommerceAgent:
                 "final_price": policy_result.get(
                     "final_price",
                     products[0].current_price,
+                ),
+                "requested_price": policy_result.get("requested_price"),
+                "reason": policy_result.get("reason"),
+                "negotiation_round": (
+                    current_transaction.negotiation_round
+                    if current_transaction
+                    and current_transaction.product_id == products[0].product_id
+                    else 1
+                ),
+                "max_negotiation_rounds": self._max_negotiation_rounds(
+                    category_max_discount=self.policy_engine.get_max_discount(
+                        products[0].category_name
+                    )
                 ),
                 "currency": "INR",
             }

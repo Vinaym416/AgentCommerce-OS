@@ -54,23 +54,12 @@ class GeminiBuyerAgent:
         return None
 
     def _extract_discount(self, text: str):
-        discount_words = [
-            "discount",
-            "off",
-            "percent off",
-            "% off",
-            "negotiate",
-            "better price",
-            "cheaper",
-            "lower price",
-            "do better",
-            "can you do better",
-            "best price",
-            "save money",
-            "price reduction",
-            "deal",
-        ]
-        if any(word in text for word in discount_words):
+        discount_pattern = (
+            r"\bdiscount\b|\boff\b|%|\bnegotiate\b|\bbetter\s+price\b|"
+            r"\bcheaper\b|\blower\s+price\b|\bdo\s+better\b|"
+            r"\bbest\s+price\b|\bsave\s+money\b|\bprice\s+reduction\b|\bdeal\b"
+        )
+        if re.search(discount_pattern, text, flags=re.IGNORECASE):
             for pattern in [r"(\d{1,2})\s*%", r"(\d{1,2})\s*percent"]:
                 matches = re.findall(pattern, text)
                 if matches:
@@ -78,9 +67,22 @@ class GeminiBuyerAgent:
             return 0.0
         return None
 
+    @staticmethod
+    def _extract_result_limit(text: str):
+        match = re.search(
+            r"\b(?:show|give|find|list)\s+(?:me\s+)?(\d+)\s+(?:options?|products?|items?)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+        return max(1, min(50, int(match.group(1)))) if match else None
+
     def _normalize_parsed_intent(self, parsed: dict, user_message: str) -> dict:
         text = user_message.lower()
         parsed = dict(parsed or {})
+        parsed["result_limit"] = (
+            parsed.get("result_limit")
+            or self._extract_result_limit(text)
+        )
 
         if not parsed.get("intent") or parsed.get("intent") == "unclear":
             if any(keyword in text for keyword in ["want", "buy", "need", "purchase", "order", "shop", "looking for"]):
@@ -110,6 +112,10 @@ class GeminiBuyerAgent:
                 "camera",
                 "speaker",
             ]
+            if any(token in text for token in ("cheap", "cheapest", "budget-friendly")):
+                parsed.setdefault("product_preferences", []).append("low_price")
+            if any(token in text for token in ("good discount", "best discount", "great discount")):
+                parsed["discount_requested"] = True
             found = [token for token in product_tokens if token in text]
             if found:
                 parsed["product_preferences"] = found[:3]
@@ -228,6 +234,7 @@ Rules:
             "confidence_score": parsed.get("confidence_score") if parsed.get("confidence_score") is not None else parsed.get("confidence", 0.7),
             "product_preferences": parsed.get("product_preferences") or [],
             "constraints": parsed.get("constraints") or [],
+            "result_limit": parsed.get("result_limit"),
         }
         return BuyerIntent(**output)
 

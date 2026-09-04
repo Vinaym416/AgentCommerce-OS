@@ -309,6 +309,23 @@ def test_buyer_agent():
     )
 
 
+def test_price_followup_does_not_match_office():
+
+    agent = create_agent()
+
+    check(
+        "Office is not a discount request",
+        agent._is_price_followup(
+            "Looking for a minimalist black bag for daily office commuting."
+        ) is False,
+    )
+
+    check(
+        "Discount phrase is detected",
+        agent._is_price_followup("Can you give me 10% off?") is True,
+    )
+
+
 # ============================================================
 # 4. PRODUCT RETRIEVAL
 # ============================================================

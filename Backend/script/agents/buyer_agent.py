@@ -79,28 +79,15 @@ Rules:
                 budget_max = float(match.group(1).replace(",", ""))
                 break
 
-        discount_requested = any(
-            token in text
-            for token in [
-                "discount",
-                "off",
-                "% off",
-                "percent off",
-                "10%",
-                "20%",
-                "50%",
-                "give me",
-                "negotiate",
-                "better price",
-                "cheaper",
-                "lower price",
-                "do better",
-                "can you do better",
-                "best price",
-                "save money",
-                "price reduction",
-                "deal",
-            ]
+        discount_requested = bool(
+            re.search(
+                r"\bdiscount\b|\boff\b|%|\bgive\s+me\b|\bnegotiate\b|"
+                r"\bbetter\s+price\b|\bcheaper\b|\blower\s+price\b|"
+                r"\bdo\s+better\b|\bbest\s+price\b|\bsave\s+money\b|"
+                r"\bprice\s+reduction\b|\bdeal\b",
+                text,
+                flags=re.IGNORECASE,
+            )
         )
 
         discount_value = None

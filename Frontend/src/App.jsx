@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import "./App.css";
 import Chat from "./Pages/Chat";
 import Checkout from "./Pages/Checkout";
+import Cart from "./Pages/Cart";
 
 function App() {
 
@@ -29,6 +30,11 @@ function App() {
         <Route
           path="/checkout"
           element={<Checkout />}
+        />
+
+        <Route
+          path="/cart"
+          element={<Cart />}
         />
 
       </Routes>
