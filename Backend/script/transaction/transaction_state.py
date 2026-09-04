@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import uuid4
@@ -45,6 +45,8 @@ class TransactionState:
     product_id: Optional[int] = None
 
     quantity: int = 1
+
+    cart_items: list = field(default_factory=list)
 
     # ========================================================
     # PRICING (ORIGINAL → NEGOTIATED → FINAL)

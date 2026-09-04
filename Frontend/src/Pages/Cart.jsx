@@ -47,11 +47,17 @@ export default function Cart() {
   function checkoutItem(item) {
     navigate("/checkout", {
       state: {
-        transactionId: item.transaction_id,
-        productId: item.product_id,
-        quantity: item.quantity,
+        cartItems: [item],
         chatSessionId: item.chatSessionId,
-        commerceData: item.commerceData,
+      },
+    });
+  }
+
+  function checkoutAll() {
+    navigate("/checkout", {
+      state: {
+        cartItems: items,
+        chatSessionId: items[0]?.chatSessionId,
       },
     });
   }
@@ -92,7 +98,7 @@ export default function Cart() {
                 className="flex flex-col gap-5 rounded-2xl border border-slate-800 bg-slate-900 p-5 sm:flex-row sm:items-center sm:justify-between"
               >
                 <div>
-                  <p className="text-xs text-slate-500">{item.category || "Product"}</p>
+                  <p className="text-xs text-slate-500">category-{item.category || "Product"}</p>
                   <h2 className="mt-1 text-lg font-semibold">{item.name}</h2>
                   <p className="mt-2 text-sm text-slate-300">
                     ₹{Number(item.final_price || item.price || 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })} each
@@ -142,7 +148,16 @@ export default function Cart() {
 
             <section className="flex items-center justify-between border-t border-slate-800 pt-6">
               <span className="text-slate-400">Cart total</span>
-              <span className="text-2xl font-bold">₹{total.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</span>
+              <div className="flex items-center gap-5">
+                <span className="text-2xl font-bold">₹{total.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</span>
+                <button
+                  type="button"
+                  onClick={checkoutAll}
+                  className="rounded-xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-emerald-500"
+                >
+                  Checkout all
+                </button>
+              </div>
             </section>
           </div>
         )}

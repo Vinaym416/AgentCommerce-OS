@@ -3,11 +3,17 @@ import { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { API_BASE_URL } from "../lib/api";
 
+const EMPTY_CART = [];
+
 export default function Checkout() {
   const location = useLocation();
   const navigate = useNavigate();
   const transactionId = location.state?.transactionId;
   const chatSessionId = location.state?.chatSessionId;
+  const cartItems = Array.isArray(location.state?.cartItems)
+    ? location.state.cartItems
+    : EMPTY_CART;
+  const isCartCheckout = cartItems.length > 0;
   const requestedQuantity = Math.max(1, Number(location.state?.quantity ?? 1));
   const acceptedOffer = location.state?.commerceData?.offer || {};
   const [loading, setLoading] = useState(false);
@@ -30,6 +36,31 @@ export default function Checkout() {
 
   useEffect(() => {
     const loadSession = async () => {
+      if (isCartCheckout) {
+        const originalTotal = cartItems.reduce(
+          (sum, item) => sum + Number(item.price || 0) * Math.max(1, Number(item.quantity || 1)),
+          0
+        );
+        const finalTotal = cartItems.reduce(
+          (sum, item) => sum + Number(item.final_price || item.price || 0) * Math.max(1, Number(item.quantity || 1)),
+          0
+        );
+        setSession({
+          transaction_id: null,
+          product: cartItems[0],
+          cart_items: cartItems,
+          original_price: originalTotal,
+          final_price: finalTotal,
+          discount: originalTotal > 0
+            ? ((originalTotal - finalTotal) / originalTotal) * 100
+            : 0,
+          quantity: 1,
+          customer: { customer_id: 5176 },
+        });
+        setSessionLoading(false);
+        return;
+      }
+
       if (!transactionId) {
         setStatus("This checkout offer has expired or is missing its transaction ID.");
         setSessionLoading(false);
@@ -70,9 +101,9 @@ export default function Checkout() {
     };
 
     loadSession();
-  }, [transactionId]);
+  }, [cartItems, isCartCheckout, requestedQuantity, transactionId]);
 
-  const product = session?.product || { product_id: 453, name: "Premium Product" };
+  const product = session?.product || cartItems[0] || { product_id: 453, name: "Premium Product" };
   const customer = session?.customer || { customer_id: 5176 };
   const originalPrice = Number(
     session?.original_price ??
@@ -113,6 +144,24 @@ export default function Checkout() {
       // 1. ASK BACKEND TO CREATE RAZORPAY ORDER
       // ------------------------------------------------------
 
+      const requestBody = isCartCheckout
+        ? {
+            customer_id: customer.customer_id,
+            cart_items: cartItems.map((item) => ({
+              product_id: item.product_id,
+              quantity: Math.max(1, Number(item.quantity || 1)),
+              transaction_id: item.transaction_id || undefined,
+            })),
+          }
+        : {
+            customer_id: customer.customer_id,
+            transaction_id: session.transaction_id || transactionId,
+            product_id: product.product_id,
+            product_price: originalPrice,
+            discount_percent: discountPercent,
+            quantity,
+          };
+
       const response = await fetch(
         `${API_BASE_URL}/commerce/create-payment-order`,
         {
@@ -120,14 +169,7 @@ export default function Checkout() {
           headers: {
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({
-            customer_id: customer.customer_id,
-            transaction_id: session.transaction_id || transactionId,
-            product_id: product.product_id,
-            product_price: originalPrice,
-            discount_percent: discountPercent,
-            quantity,
-          }),
+          body: JSON.stringify(requestBody),
         }
       );
 
@@ -371,10 +413,36 @@ export default function Checkout() {
               </p>
               <h2 className="text-4xl font-bold tracking-tight">{product.name}</h2>
               <p className="mt-4 max-w-xl leading-7 text-slate-400">
-                Your AI commerce agent negotiated a personalized price for this purchase.
+                {isCartCheckout
+                  ? "Your selected products will be paid together in one secure transaction."
+                  : "Your AI commerce agent negotiated a personalized price for this purchase."}
               </p>
 
             </div>
+
+            {isCartCheckout && (
+              <div className="mb-8 rounded-2xl border border-white/10 bg-slate-900/80 p-5">
+                <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">
+                  Items in this payment
+                </p>
+                <div className="mt-4 space-y-3">
+                  {cartItems.map((item) => (
+                    <div
+                      key={item.product_id}
+                      className="flex items-center justify-between gap-4 border-b border-white/10 pb-3 last:border-0 last:pb-0"
+                    >
+                      <div>
+                        <p className="text-sm font-medium">{item.name || `Product ${item.product_id}`}</p>
+                        <p className="mt-1 text-xs text-slate-500">Quantity: {item.quantity}</p>
+                      </div>
+                      <p className="text-sm font-semibold">
+                        ₹{(Number(item.final_price || item.price || 0) * Math.max(1, Number(item.quantity || 1))).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* PRICE */}
 
@@ -395,7 +463,7 @@ export default function Checkout() {
               <div className="mt-4 flex items-center justify-between">
                 <span className="text-slate-400">AI discount</span>
                 <span className="rounded-full bg-emerald-400/10 px-3 py-1 text-sm font-semibold text-emerald-400">
-                  {discountPercent}% OFF
+                  {discountPercent.toFixed(1)}% OFF
                 </span>
 
               </div>

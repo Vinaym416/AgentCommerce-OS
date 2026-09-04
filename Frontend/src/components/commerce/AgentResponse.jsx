@@ -511,7 +511,7 @@ function ProductDetail({
               {category && (
 
                 <p className="mt-1 text-xs text-slate-500">
-                  {category}
+                 category-{category}
                 </p>
 
               )}
@@ -978,30 +978,37 @@ function AcceptedOffer({ data, onAction }) {
   const productId = offer.product_id ?? product.product_id ?? data?.product_id;
   const [inCart, setInCart] = useState(() => cartContainsProduct(productId));
   const totalPrice = finalPrice * quantity;
-  const currentCategory =
-    offer.category ??
-    product.category ??
-    product.category_name;
-  const normalizeCategory = (value) =>
-    String(value ?? "")
-      .trim()
-      .toLowerCase()
-      .replace(/^category\s+/, "");
-  const crossSell = (Array.isArray(data?.products) ? data.products : [])
+  const suggestions = [
+    ...(Array.isArray(data?.suggested_products) ? data.suggested_products : []),
+    ...(Array.isArray(data?.products) ? data.products : []),
+  ]
     .filter((candidate) => {
       const candidateId = candidate?.product_id ?? candidate?.id;
-      const candidateCategory = candidate?.category ?? candidate?.category_name;
       return (
         String(candidateId) !== String(productId) &&
-        (!currentCategory || !candidateCategory ||
-          normalizeCategory(candidateCategory) === normalizeCategory(currentCategory))
+        candidateId != null
       );
     })
     .sort(
       (left, right) =>
         Number(right?.product_score ?? right?.match_score ?? 0) -
         Number(left?.product_score ?? left?.match_score ?? 0)
-    )[0];
+    )
+    .filter(
+      (candidate, index, all) =>
+        all.findIndex(
+          (item) => String(item?.product_id ?? item?.id) === String(candidate?.product_id ?? candidate?.id)
+        ) === index
+    )
+    .slice(0, 1);
+
+  const suggestion = suggestions[0];
+  const suggestionName =
+    suggestion?.name ||
+    suggestion?.product_name ||
+    `Product ${suggestion?.product_id ?? suggestion?.id}`;
+  const suggestionPrice = suggestion?.price ?? suggestion?.current_price;
+  const suggestionIsUpsell = Number(suggestionPrice ?? 0) > finalPrice;
 
   function addAcceptedOfferToCart() {
     if (inCart) {
@@ -1062,22 +1069,28 @@ function AcceptedOffer({ data, onAction }) {
         <p className="mt-3 text-sm text-slate-400">
           Total: <span className="font-semibold text-white">₹{totalPrice.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</span>
         </p>
-        {crossSell && (
+        {suggestion && (
           <div className="mt-5 rounded-xl border border-slate-800 bg-slate-950 p-4">
             <p className="text-xs font-medium text-slate-400">
               You might also like
             </p>
-            <p className="mt-2 text-sm font-medium text-white">
-              {crossSell.name || crossSell.product_name || `Product ${crossSell.product_id ?? crossSell.id}`}
+            <p className="mt-2 text-sm leading-6 text-slate-300">
+              {suggestionIsUpsell
+                ? `You might also want ${suggestionName}. It's slightly more expensive, but it has a higher match score.`
+                : `Since you're buying ${product.name || `Product ${productId}`}, I found another item that pairs well with it.`}
             </p>
-            <p className="mt-1 text-xs leading-5 text-slate-500">
-              Since you&apos;re buying {product.name || `Product ${productId}`}, this is another option in the same category.
-            </p>
-            {(crossSell.price ?? crossSell.current_price) != null && (
-              <p className="mt-2 text-sm text-slate-300">
-                ₹{Number(crossSell.price ?? crossSell.current_price).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
-              </p>
-            )}
+            <button
+              type="button"
+              onClick={() => onAction?.("select_product", suggestion, { ...data, product: suggestion })}
+              className="mt-3 w-full rounded-xl border border-slate-800 p-3 text-left transition hover:border-emerald-500/50 hover:bg-slate-900"
+            >
+              <p className="text-sm font-medium text-white">{suggestionName}</p>
+              {suggestionPrice != null && (
+                <p className="mt-2 text-sm text-slate-300">
+                  ₹{Number(suggestionPrice).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                </p>
+              )}
+            </button>
           </div>
         )}
         <button

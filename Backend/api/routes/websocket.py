@@ -21,6 +21,7 @@ def _format_response(result):
         "action": result.get("action") or result.get("final_action"),
         "final_action": result.get("final_action"),
         "products": result.get("products", []),
+        "suggested_products": result.get("suggested_products", []),
         "offer": result.get("offer"),
         "transaction": result.get("transaction"),
         "checkout": result.get("checkout"),

@@ -1,4 +1,5 @@
-from typing import Optional
+from typing import Optional, List
+from dataclasses import asdict
 
 from fastapi import (
     APIRouter,
@@ -25,6 +26,7 @@ from script.database.repositories.product_repository import (
     ProductRepository,
 )
 from script.transaction.transaction_manager import TransactionManager
+from script.transaction.transaction_state import TransactionState
 from script.context.chat_session_store import ChatSessionStore
 from pymongo.errors import PyMongoError
 import threading
@@ -54,13 +56,15 @@ class CreatePaymentOrderRequest(BaseModel):
 
     transaction_id: Optional[str] = None
 
-    product_id: int
+    product_id: Optional[int] = None
 
-    product_price: float
+    product_price: Optional[float] = None
 
     discount_percent: float = 0.0
 
     quantity: int = 1
+
+    cart_items: List[dict] = []
 
 
 class VerifyPaymentRequest(BaseModel):
@@ -223,7 +227,7 @@ def get_commerce_session(
         ),
         "product": {
             "product_id": product_id,
-            "name": product.get("name", "Premium Product"),
+            "name": product.get("name") or product.get("product_name") or f"Product {product_id}",
             "category": product.get("category_name") or product.get("category") or "Premium",
             "price": original_price,
         },
@@ -251,6 +255,114 @@ def get_commerce_session(
 def create_payment_order(
     request: CreatePaymentOrderRequest,
 ):
+
+    if request.cart_items:
+        if request.customer_id is None:
+            raise HTTPException(status_code=400, detail="customer_id is required for cart checkout")
+        if len(request.cart_items) > 50:
+            raise HTTPException(status_code=400, detail="cart cannot contain more than 50 items")
+
+        transaction_manager = TransactionManager()
+        product_repository = ProductRepository()
+        normalized_items = []
+        total_original = 0.0
+        total_final = 0.0
+
+        for item in request.cart_items:
+            product_id = item.get("product_id")
+            quantity = max(1, int(item.get("quantity", 1) or 1))
+            if product_id is None or quantity > 10:
+                raise HTTPException(status_code=400, detail="Each cart item needs a valid product and quantity")
+
+            source_transaction = None
+            transaction_id = item.get("transaction_id")
+            if transaction_id:
+                source_transaction = transaction_manager.get_by_transaction_id(transaction_id)
+                if (
+                    source_transaction is None
+                    or source_transaction.customer_id != request.customer_id
+                    or int(source_transaction.product_id or 0) != int(product_id)
+                ):
+                    raise HTTPException(status_code=400, detail="Cart item transaction is invalid")
+
+            product = product_repository.get_by_product_id(int(product_id))
+            original_price = float(
+                source_transaction.original_price
+                if source_transaction is not None
+                else (product or {}).get("current_price") or (product or {}).get("price") or 0
+            )
+            final_price = float(
+                source_transaction.final_price
+                if source_transaction is not None
+                else original_price
+            )
+            if final_price <= 0:
+                raise HTTPException(status_code=400, detail="Cart contains an item with an invalid price")
+
+            normalized_items.append({
+                "product_id": int(product_id),
+                "quantity": quantity,
+                "original_price": round(original_price, 2),
+                "final_price": round(final_price, 2),
+                "transaction_id": transaction_id,
+            })
+            total_original += original_price * quantity
+            total_final += final_price * quantity
+
+        total_original = round(total_original, 2)
+        total_final = round(total_final, 2)
+        first_product_id = normalized_items[0]["product_id"]
+        bundle = TransactionState(
+            customer_id=request.customer_id,
+            product_id=first_product_id,
+            quantity=1,
+            original_price=total_original,
+            negotiated_price=total_original,
+            final_price=total_final,
+            discount_percent=(
+                ((total_original - total_final) / total_original) * 100
+                if total_original else 0
+            ),
+            status="PAYMENT_PENDING",
+            checkout_ready=True,
+            customer_accepted=True,
+            payment_status="PENDING",
+            cart_items=normalized_items,
+        )
+
+        agent = _get_execution_agent()
+        razorpay_order = agent.razorpay_client.create_order(
+            amount=total_final,
+            currency="INR",
+            receipt=bundle.transaction_id,
+            notes={
+                "customer_id": str(request.customer_id),
+                "cart_checkout": "true",
+                "item_count": str(len(normalized_items)),
+            },
+        )
+        if not razorpay_order.success:
+            raise HTTPException(status_code=502, detail={"message": "Razorpay order was not created.", "reason": razorpay_order.reason})
+
+        bundle.razorpay_order_id = razorpay_order.razorpay_order_id
+        transaction_manager.repository.upsert(asdict(bundle))
+
+        return {
+            "success": True,
+            "transactionId": bundle.transaction_id,
+            "orderId": razorpay_order.razorpay_order_id,
+            "amount": razorpay_order.amount_in_paise,
+            "currency": razorpay_order.currency,
+            "keyId": agent.razorpay_client.key_id,
+            "checkout": {
+                "transaction_id": bundle.transaction_id,
+                "product_id": first_product_id,
+                "original_price": total_original,
+                "final_price": total_final,
+                "quantity": 1,
+                "cart_items": normalized_items,
+            },
+        }
 
     if request.quantity < 1:
         raise HTTPException(status_code=400, detail="quantity must be at least 1")

@@ -437,6 +437,11 @@ export default function Chat() {
           data: response,
         },
       ]);
+
+      // The WebSocket persists the turn before returning, so the session route is now safe to open.
+      if (!routeSessionId) {
+        navigate(`/commerce/chat/session/${sessionId}`, { replace: true });
+      }
     } catch (error) {
       console.error("Commerce error:", error);
 
@@ -832,14 +837,27 @@ export default function Chat() {
       cart = [];
     }
 
+    const productId = product?.product_id ?? product?.id ?? data?.offer?.product_id;
+    const transactionProductId =
+      data?.offer?.product_id ??
+      data?.transaction?.product_id;
+    const transactionId =
+      data?.offer?.transaction_id ??
+      data?.transaction?.transaction_id;
+
     const item = {
-      product_id: product?.product_id ?? product?.id ?? data?.offer?.product_id,
+      product_id: productId,
       name: product?.name || product?.product_name || "Selected product",
       category: product?.category || product?.category_name,
       price: Number(product?.price ?? product?.original_price ?? 0),
       final_price: Number(product?.final_price ?? product?.price ?? 0),
       quantity: Math.min(10, Math.max(1, Number(product?.quantity ?? 1))),
-      transaction_id: data?.offer?.transaction_id ?? data?.transaction?.transaction_id,
+      transaction_id:
+        transactionId &&
+        transactionProductId != null &&
+        String(transactionProductId) === String(productId)
+          ? transactionId
+          : undefined,
       chatSessionId: sessionId,
       commerceData: data,
     };

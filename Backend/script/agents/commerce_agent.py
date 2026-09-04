@@ -1847,6 +1847,8 @@ class CommerceAgent:
                             "general",
                             "unspecified",
                             "unknown",
+                            "any",
+                            "all",
                         }
                         else None
                     ),
@@ -3123,6 +3125,28 @@ class CommerceAgent:
         discount_score
     ) -> Dict[str, Any]:
 
+        suggested_products = []
+        if products and final_action in {
+            "OFFER_REQUESTED",
+            "COUNTER_OFFER",
+            "NEGOTIATE",
+            "MAX_DISCOUNT_REACHED",
+            "LIMITED_OFFER",
+        }:
+            try:
+                related_rows = self.product_retriever.search(
+                    category=products[0].category_name,
+                    limit=6,
+                )
+                related_products = self._rows_to_products(related_rows)
+                suggested_products = [
+                    product
+                    for product in related_products
+                    if product.product_id != products[0].product_id
+                ][:5]
+            except Exception as exc:
+                print(f"Unable to load post-offer suggestions: {exc}")
+
         result = {
 
             "message": {
@@ -3202,6 +3226,8 @@ class CommerceAgent:
 
             "products": [],
 
+            "suggested_products": [],
+
             "offer": None,
 
             "transaction": None,
@@ -3276,6 +3302,21 @@ class CommerceAgent:
                     product.product_score,
                     4
                 )
+            })
+
+        for product in suggested_products:
+            result["suggested_products"].append({
+                "product_id": product.product_id,
+                "name": product.product_name,
+                "category": product.category_name,
+                "availability": product.availability,
+                "currency": product.currency,
+                "price": round(product.current_price, 2),
+                "rating": round(product.rating, 2),
+                "conversion_rate": round(product.conversion_rate, 4),
+                "demand_score": round(product.demand_score, 4),
+                "quality_score": round(product.quality_score, 4),
+                "product_score": round(product.product_score, 4),
             })
 
         # ----------------------------------------------------

@@ -58,7 +58,7 @@ function ProductCard({
 
         <div className="mb-2">
           <p className="text-xs text-slate-500">
-            {category}
+            category-{category}
           </p>
 
           <h3 className="mt-1 font-medium text-white">

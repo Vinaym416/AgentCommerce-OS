@@ -28,6 +28,10 @@ class ProductRepository:
                 price_filter["$lte"] = float(budget)
             query["current_price"] = price_filter
 
+        normalized_category = str(category or "").strip().lower()
+        if normalized_category in {"", "any", "all", "general", "unspecified", "unknown", "none", "null"}:
+            category = None
+
         if category is not None:
             query["$or"] = [
                 {"product_category": category},
@@ -48,7 +52,30 @@ class ProductRepository:
         if limit is not None:
             cursor = cursor.limit(limit)
 
-        return list(cursor)
+        results = list(cursor)
+
+        # The catalog currently stores generated category labels such as
+        # "Category 1", while buyer intents contain human labels such as
+        # "running shoes". Keep the price constraint and relax only the
+        # unmatched category so valid products are still returned.
+        if not results and category is not None:
+            fallback_query = dict(query)
+            fallback_query.pop("$or", None)
+            fallback_cursor = self.collection.find(
+                fallback_query,
+                {"_id": 0},
+            ).sort(
+                [
+                    ("product_score", -1),
+                    ("conversion_rate", -1),
+                    ("quality_score", -1),
+                ]
+            )
+            if limit is not None:
+                fallback_cursor = fallback_cursor.limit(limit)
+            results = list(fallback_cursor)
+
+        return results
 
     def get_by_product_id(self, product_id: int) -> Optional[Dict[str, Any]]:
         return self.collection.find_one(
