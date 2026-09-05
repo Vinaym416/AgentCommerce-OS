@@ -157,7 +157,7 @@ class GeminiBuyerAgent:
         parsed["currency"] = parsed.get("currency") or "INR"
         parsed["product_category"] = parsed.get("product_category") or "general"
         parsed["discount_value"] = parsed.get("discount_value") or parsed.get("max_discount_requested") or discount_value
-        parsed["urgency"] = parsed.get("urgency") or "medium"
+        parsed["urgency"] = parsed.get("urgency") or "low"
         parsed["confidence_score"] = parsed.get("confidence_score", parsed.get("confidence", 0.7))
 
         return parsed

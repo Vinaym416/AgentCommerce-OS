@@ -2,11 +2,23 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 const CART_STORAGE_KEY = "agentcommerce-cart";
+const CHAT_SESSION_ID_KEY = "agentcommerce-chat-session-id";
+
+function readActiveSessionId() {
+  return (
+    sessionStorage.getItem(CHAT_SESSION_ID_KEY) ||
+    localStorage.getItem(CHAT_SESSION_ID_KEY) ||
+    ""
+  );
+}
 
 function readCart() {
   try {
     const value = JSON.parse(localStorage.getItem(CART_STORAGE_KEY) || "[]");
-    return Array.isArray(value) ? value : [];
+    const activeSessionId = readActiveSessionId();
+    return Array.isArray(value)
+      ? value.filter((item) => item.chatSessionId === activeSessionId)
+      : [];
   } catch {
     return [];
   }
@@ -17,7 +29,21 @@ export default function Cart() {
   const [items, setItems] = useState(readCart);
 
   useEffect(() => {
-    localStorage.setItem(CART_STORAGE_KEY, JSON.stringify(items));
+    let allItems = [];
+    try {
+      const stored = JSON.parse(localStorage.getItem(CART_STORAGE_KEY) || "[]");
+      allItems = Array.isArray(stored) ? stored : [];
+    } catch {
+      allItems = [];
+    }
+    const activeSessionId = readActiveSessionId();
+    const otherSessionItems = allItems.filter(
+      (item) => item.chatSessionId !== activeSessionId
+    );
+    localStorage.setItem(
+      CART_STORAGE_KEY,
+      JSON.stringify([...otherSessionItems, ...items])
+    );
     window.dispatchEvent(new Event("agentcommerce-cart-updated"));
   }, [items]);
 

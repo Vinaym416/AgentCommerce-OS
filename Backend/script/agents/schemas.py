@@ -24,7 +24,7 @@ if ConfigDict is not None:
         product_category: str = "general"
         discount_requested: bool = False
         discount_value: Optional[float] = None
-        urgency: Literal["low", "medium", "high"] = "medium"
+        urgency: Literal["low", "medium", "high", "normal"] = "medium"
         confidence_score: float = 0.0
 
         product_preferences: List[str] = Field(default_factory=list)

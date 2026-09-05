@@ -34,6 +34,11 @@ export default function Chat() {
   const messagesEndRef = useRef(null);
   const socketRef = useRef(null);
   const pendingRequestRef = useRef(null);
+  const reconnectSocketRef = useRef(null);
+  const reconnectTimerRef = useRef(null);
+  const reconnectAttemptsRef = useRef(0);
+  const freshSessionIdsRef = useRef(new Set());
+  const hasLiveResponseRef = useRef(false);
 
   const initialSession = (() => {
     const navigation = performance.getEntriesByType("navigation")[0];
@@ -72,6 +77,9 @@ export default function Chat() {
   const [loading, setLoading] = useState(false);
   const [socketReady, setSocketReady] = useState(false);
   const [cartCount, setCartCount] = useState(() => readCartCount());
+  const [agentStatus, setAgentStatus] = useState([]);
+  const [agentProgress, setAgentProgress] = useState([]);
+  const [connectionNotice, setConnectionNotice] = useState("");
 
   useEffect(() => {
     const refreshCartCount = () => setCartCount(readCartCount());
@@ -100,7 +108,7 @@ export default function Chat() {
     initialSession?.negotiationContext || {}
   );
 
-  const [sessionId] = useState(() => {
+  const [sessionId, setSessionId] = useState(() => {
     if (routeSessionId) {
       localStorage.setItem(CHAT_SESSION_ID_KEY, routeSessionId);
       sessionStorage.setItem(CHAT_SESSION_ID_KEY, routeSessionId);
@@ -130,13 +138,16 @@ export default function Chat() {
   useEffect(() => {
     let active = true;
 
-    if (!routeSessionId) {
+    if (
+      !routeSessionId ||
+      freshSessionIdsRef.current.has(sessionId)
+    ) {
       return undefined;
     }
 
     getChatSession(sessionId)
       .then((session) => {
-        if (!active) {
+        if (!active || hasLiveResponseRef.current) {
           return;
         }
 
@@ -183,30 +194,96 @@ export default function Chat() {
   useEffect(() => {
     let active = true;
 
-    const socket = createCommerceSocket({
-      onOpen: () => {
-        if (active) {
-          setSocketReady(true);
-        }
-      },
+    function connectSocket() {
+      if (!active) {
+        return;
+      }
 
-      onClose: () => {
-        if (active) {
-          setSocketReady(false);
-        }
-      },
+      const socket = createCommerceSocket({
+        onMessage: (response) => {
+          if (response?.type !== "agent_progress") {
+            return;
+          }
 
-      onError: () => {
-        if (active) {
-          setSocketReady(false);
-        }
-      },
-    });
+          setAgentProgress((previous) => {
+            const index = previous.findIndex(
+              (item) => item.agent === response.agent
+            );
+            const nextItem = {
+              agent: response.agent,
+              status: response.status,
+              message: response.message,
+            };
 
-    socketRef.current = socket;
+            if (index === -1) {
+              return [...previous, nextItem];
+            }
+
+            return previous.map((item, itemIndex) =>
+              itemIndex === index ? nextItem : item
+            );
+          });
+        },
+
+        onOpen: () => {
+          if (active) {
+            setSocketReady(true);
+            if (reconnectAttemptsRef.current > 0) {
+              setConnectionNotice("Thanks for waiting. I’m ready to serve you.");
+            }
+            reconnectAttemptsRef.current = 0;
+          }
+        },
+
+        onClose: () => {
+          if (active) {
+            setSocketReady(false);
+            if (reconnectAttemptsRef.current < 2) {
+              reconnectAttemptsRef.current += 1;
+              setConnectionNotice(
+                `I’m reconnecting to the shopping service (attempt ${reconnectAttemptsRef.current} of 2)...`
+              );
+              reconnectTimerRef.current = window.setTimeout(() => {
+                connectSocket();
+              }, 800);
+            } else {
+              setConnectionNotice(
+                "Automatic reconnect failed twice. Use Reconnect to try manually."
+              );
+            }
+          }
+        },
+
+        onError: () => {
+          if (active) {
+            setSocketReady(false);
+          }
+        },
+      });
+
+      socketRef.current = socket;
+    }
+
+    reconnectSocketRef.current = () => {
+      if (reconnectTimerRef.current) {
+        window.clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      reconnectAttemptsRef.current = 0;
+      setConnectionNotice("I’m reconnecting to the shopping service...");
+      setSocketReady(false);
+      socketRef.current?.close();
+      connectSocket();
+    };
+
+    connectSocket();
 
     return () => {
       active = false;
+      reconnectSocketRef.current = null;
+      if (reconnectTimerRef.current) {
+        window.clearTimeout(reconnectTimerRef.current);
+      }
 
       if (pendingRequestRef.current) {
         pendingRequestRef.current.reject(
@@ -216,7 +293,7 @@ export default function Chat() {
         pendingRequestRef.current = null;
       }
 
-      socket.close();
+      socketRef.current?.close();
       socketRef.current = null;
     };
   }, []);
@@ -233,7 +310,7 @@ export default function Chat() {
 
   const suggestions = [
     "Find me a smartphone under ₹25,000",
-    "Find me running shoes under ₹3,000",
+    "show me running shoes under ₹3,000",
     "Show me the best deal available",
   ];
 
@@ -264,7 +341,10 @@ export default function Chat() {
       setNegotiationContext({});
     }
 
-    if (/^\d+(?:[.,]\d+)?$/.test(text.replace(/\s/g, ""))) {
+    if (
+      /^\d+(?:[.,]\d+)?$/.test(text.replace(/\s/g, "")) &&
+      !isContextClarificationPending()
+    ) {
       setInput("");
       setMessages((prev) => [
         ...prev,
@@ -322,6 +402,8 @@ export default function Chat() {
     ]);
 
     setLoading(true);
+    setAgentProgress([]);
+    setConnectionNotice("");
 
     try {
       const response = await sendSocketMessage({
@@ -341,6 +423,11 @@ export default function Chat() {
          */
         execute_payment: false,
       });
+
+      if (Array.isArray(response?.agent_status)) {
+        setAgentStatus(response.agent_status);
+      }
+      hasLiveResponseRef.current = true;
 
       /*
        * Resolve the product that the backend is currently talking about.
@@ -459,6 +546,14 @@ export default function Chat() {
     }
   }
 
+  function isContextClarificationPending() {
+    return messages.some(
+      (message) =>
+        message.role === "assistant" &&
+        message.data?.action === "CONTEXT_REQUIRED"
+    );
+  }
+
   function isNewCatalogSearch(text) {
     const normalized = text.toLowerCase().replace(/\s+/g, " ").trim();
     const phraseMatch = [
@@ -513,6 +608,12 @@ export default function Chat() {
         try {
           const response = JSON.parse(event.data);
 
+          if (response?.type === "agent_progress") {
+            return;
+          }
+
+          socket.removeEventListener("message", handleMessage);
+          socket.removeEventListener("error", handleError);
           pendingRequestRef.current = null;
 
           if (response?.success === false) {
@@ -529,6 +630,8 @@ export default function Chat() {
 
           resolve(response);
         } catch {
+          socket.removeEventListener("message", handleMessage);
+          socket.removeEventListener("error", handleError);
           pendingRequestRef.current = null;
 
           reject(
@@ -540,6 +643,8 @@ export default function Chat() {
       };
 
       const handleError = () => {
+        socket.removeEventListener("message", handleMessage);
+        socket.removeEventListener("error", handleError);
         pendingRequestRef.current = null;
 
         reject(
@@ -550,7 +655,7 @@ export default function Chat() {
       socket.addEventListener(
         "message",
         handleMessage,
-        { once: true }
+        { once: false }
       );
 
       socket.addEventListener(
@@ -632,8 +737,15 @@ export default function Chat() {
     if (action === "remove_from_cart") {
       try {
         const stored = JSON.parse(localStorage.getItem(CART_STORAGE_KEY) || "[]");
+        const activeSessionId =
+          sessionStorage.getItem(CHAT_SESSION_ID_KEY) ||
+          localStorage.getItem(CHAT_SESSION_ID_KEY);
         const nextCart = Array.isArray(stored)
-          ? stored.filter((item) => String(item.product_id) !== String(product?.product_id))
+          ? stored.filter(
+              (item) =>
+                item.chatSessionId !== activeSessionId ||
+                String(item.product_id) !== String(product?.product_id)
+            )
           : [];
         localStorage.setItem(CART_STORAGE_KEY, JSON.stringify(nextCart));
         window.dispatchEvent(new Event("agentcommerce-cart-updated"));
@@ -658,6 +770,12 @@ export default function Chat() {
 
     if (action === "numeric_suggestion") {
       handleSend(product, negotiationContext);
+      return;
+    }
+
+    if (action === "context_complete") {
+      const contextValues = Object.values(product || {});
+      handleSend(contextValues.join(", "), {});
       return;
     }
 
@@ -861,14 +979,21 @@ export default function Chat() {
       chatSessionId: sessionId,
       commerceData: data,
     };
-    const existing = cart.find(
+    const activeSessionItems = cart.filter(
+      (candidate) => candidate.chatSessionId === sessionId
+    );
+    const otherSessionItems = cart.filter(
+      (candidate) => candidate.chatSessionId !== sessionId
+    );
+    const existing = activeSessionItems.find(
       (candidate) => String(candidate.product_id) === String(item.product_id)
     );
-    const nextCart = existing
-      ? cart.map((candidate) => candidate === existing
+    const nextSessionItems = existing
+      ? activeSessionItems.map((candidate) => candidate === existing
           ? { ...candidate, quantity: Math.min(10, candidate.quantity + item.quantity) }
           : candidate)
-      : [...cart, item];
+      : [...activeSessionItems, item];
+    const nextCart = [...otherSessionItems, ...nextSessionItems];
     localStorage.setItem(CART_STORAGE_KEY, JSON.stringify(nextCart));
     window.dispatchEvent(new Event("agentcommerce-cart-updated"));
   }
@@ -900,10 +1025,19 @@ export default function Chat() {
    */
   function resetChat() {
     const newSessionId = crypto.randomUUID();
+    freshSessionIdsRef.current.add(newSessionId);
 
+    localStorage.removeItem(CART_STORAGE_KEY);
+    setCartCount(0);
+    window.dispatchEvent(new Event("agentcommerce-cart-updated"));
+
+    hasLiveResponseRef.current = true;
+    setSessionId(newSessionId);
     setMessages([WELCOME_MESSAGE]);
     setInput("");
     setNegotiationContext({});
+    setAgentStatus([]);
+    setAgentProgress([]);
     setLoading(false);
 
     sessionStorage.removeItem(
@@ -927,10 +1061,10 @@ export default function Chat() {
   }
 
   return (
-    <div className="flex h-screen bg-slate-950 text-white">
+    <div className="flex h-screen min-h-0 overflow-hidden bg-slate-950 text-white">
 
       {/* SIDEBAR */}
-      <aside className="hidden w-72 flex-col border-r border-slate-800 bg-slate-950 lg:flex">
+      <aside className="hidden min-h-0 w-72 flex-col border-r border-slate-800 bg-slate-950 lg:flex">
 
         <div className="border-b border-slate-800 px-5 py-5">
 
@@ -954,7 +1088,7 @@ export default function Chat() {
 
         </div>
 
-        <div className="flex-1 px-4 py-5">
+        <div className="min-h-0 flex-1 overflow-hidden px-4 py-5">
 
           <button
             onClick={resetChat}
@@ -965,11 +1099,13 @@ export default function Chat() {
             New conversation
           </button>
 
-          <p className="mb-3 px-2 text-xs font-semibold uppercase tracking-wider text-slate-500">
-            Recent
-          </p>
+          <AgentProgress items={agentProgress} />
 
-          <div className="space-y-1">
+            {/* <p className="mb-3 px-2 text-xs font-semibold uppercase tracking-wider text-slate-500">
+              Recent
+            </p> */}
+
+          {/* <div className="space-y-1">
 
             <button className="w-full rounded-lg bg-slate-900 px-3 py-3 text-left text-sm text-slate-300">
               Smartphone shopping
@@ -983,12 +1119,12 @@ export default function Chat() {
               Running shoes
             </button>
 
-          </div>
+          </div> */}
 
         </div>
 
         {/* AGENT STATUS */}
-        <div className="border-t border-slate-800 p-4">
+        <div className="shrink-0 border-t border-slate-800 p-4">
 
           <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
 
@@ -998,29 +1134,43 @@ export default function Chat() {
                 Agent Status
               </span>
 
-              <span className="flex items-center gap-2 text-xs text-emerald-400">
+              <span
+                className={`flex items-center gap-2 text-xs ${
+                  socketReady
+                    ? "text-emerald-400"
+                    : "text-amber-400"
+                }`}
+              >
 
-                <span className="h-2 w-2 rounded-full bg-emerald-400" />
+                <span
+                  className={`h-2 w-2 rounded-full ${
+                    socketReady
+                      ? "bg-emerald-400"
+                      : "animate-pulse bg-amber-400"
+                  }`}
+                />
 
-                Online
+                {socketReady ? "Online" : "Connecting"}
 
               </span>
 
             </div>
 
-            <div className="space-y-2 text-xs text-slate-500">
-
-              <StatusRow
-                name="Buyer Agent"
-              />
-
-              <StatusRow
-                name="Negotiation Agent"
-              />
-
-              <StatusRow
-                name="Payment Agent"
-              />
+            <div className="agent-status-scroll max-h-14 space-y-2 overflow-y-auto pr-1 text-xs text-slate-500">
+              {agentStatus.length > 0 ? (
+                agentStatus.map((agent) => (
+                  <StatusRow
+                    key={agent.name}
+                    name={agent.name}
+                    implementation={agent.implementation}
+                    status={agent.status}
+                  />
+                ))
+              ) : (
+                <p className="text-xs text-slate-600">
+                  Start a chat to inspect the live agent session.
+                </p>
+              )}
 
             </div>
 
@@ -1031,7 +1181,7 @@ export default function Chat() {
       </aside>
 
       {/* MAIN */}
-      <main className="flex min-w-0 flex-1 flex-col">
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col">
 
         {/* HEADER */}
         <header className="flex h-16 items-center justify-between border-b border-slate-800 px-5 lg:px-8">
@@ -1065,7 +1215,7 @@ export default function Chat() {
         </header>
 
         {/* CHAT */}
-        <div className="flex-1 overflow-y-auto">
+        <div className="chat-scroll flex-1 overflow-y-auto">
 
           <div className="mx-auto max-w-5xl px-4 py-8 sm:px-6">
 
@@ -1184,13 +1334,23 @@ export default function Chat() {
                 }`}
               />
 
-              <p className="text-center text-[11px] text-slate-600">
-
-                {socketReady
-                  ? "Your agent can discover products, negotiate offers and prepare secure checkout."
-                  : "Connecting to AgentCommerce..."}
-
-              </p>
+              {socketReady ? (
+                <p className="text-center text-[11px] text-slate-600">
+                  Your agent can discover products, negotiate offers and prepare secure checkout.
+                </p>
+              ) : connectionNotice.includes("failed twice") ? (
+                <button
+                  type="button"
+                  onClick={() => reconnectSocketRef.current?.()}
+                  className="rounded-md px-2 py-1 text-[11px] text-amber-400 transition hover:bg-amber-400/10 hover:text-amber-300"
+                >
+                  ↻ Reconnect to AgentCommerce
+                </button>
+              ) : (
+                <p className="text-center text-[11px] text-amber-400">
+                  {connectionNotice || "Connecting to AgentCommerce..."}
+                </p>
+              )}
 
             </div>
 
@@ -1264,19 +1424,75 @@ function AgentAvatar() {
 }
 
 
-/* STATUS */
+function AgentProgress({ items }) {
 
-function StatusRow({ name }) {
+  if (!items.length) {
+    return null;
+  }
 
   return (
-    <div className="flex justify-between">
+    <div className="agent-status-scroll mb-4 max-h-68 overflow-y-auto rounded-xl border border-slate-800 bg-slate-900/70 p-3">
+      <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+        Live agent progress
+      </p>
 
-      <span>
-        {name}
+      <div className="space-y-0">
+        {items.map((item, index) => (
+          <div
+            key={item.agent}
+            className="relative flex gap-2.5 pb-2 last:pb-0"
+          >
+            {index < items.length - 1 && (
+              <span className="absolute left-[5px] top-3 h-full border-l border-slate-700" />
+            )}
+
+            <span
+              className={`relative mt-1 h-3 w-3 shrink-0 rounded-full border-2 ${
+                item.status === "processing"
+                  ? "animate-pulse border-amber-400 bg-amber-400/30"
+                  : "border-emerald-400 bg-emerald-400/30"
+              }`}
+            />
+
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                <span className="text-[11px] font-medium text-slate-300">
+                  {item.agent}
+                </span>
+                <span className="text-[10px] uppercase tracking-wide text-slate-600">
+                  {item.status}
+                </span>
+              </div>
+              <p className="text-[10px] leading-4 text-slate-500">
+                {item.message}
+              </p>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+
+/* STATUS */
+
+function StatusRow({ name, implementation, status }) {
+
+  return (
+    <div className="flex items-start justify-between gap-3">
+
+      <span className="min-w-0">
+        <span className="block truncate text-slate-300" title={name}>
+          {name}
+        </span>
+        <span className="block truncate text-[10px] text-slate-600" title={implementation}>
+          {implementation}
+        </span>
       </span>
 
-      <span className="text-emerald-400">
-        Ready
+      <span className={status === "initialized" ? "shrink-0 text-emerald-400" : "shrink-0 text-amber-400"}>
+        {status}
       </span>
 
     </div>

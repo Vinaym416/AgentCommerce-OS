@@ -1,15 +1,26 @@
-
 import { useEffect, useState } from "react";
 import ProductCard from "../ProductCard";
 
 const PAGE_SIZE = 10;
 const CART_STORAGE_KEY = "agentcommerce-cart";
+const CHAT_SESSION_ID_KEY = "agentcommerce-chat-session-id";
+
+function readActiveSessionId() {
+  return (
+    sessionStorage.getItem(CHAT_SESSION_ID_KEY) ||
+    localStorage.getItem(CHAT_SESSION_ID_KEY) ||
+    ""
+  );
+}
 
 function cartContainsProduct(productId) {
   try {
     const cart = JSON.parse(localStorage.getItem(CART_STORAGE_KEY) || "[]");
+    const activeSessionId = readActiveSessionId();
     return Array.isArray(cart) && cart.some(
-      (item) => String(item.product_id) === String(productId)
+      (item) =>
+        item.chatSessionId === activeSessionId &&
+        String(item.product_id) === String(productId)
     );
   } catch {
     return false;
@@ -39,15 +50,11 @@ export default function AgentResponse({ data, onAction }) {
       )
   );
 
-  /*
-   * Determine whether this response represents one selected product.
-   */
   const explicitProductDetail =
     action === "PRODUCT_SELECTED" ||
     action === "PRODUCT_DETAIL" ||
     action === "VIEW_PRODUCT" ||
-    action === "select_product" ||
-    Boolean(data?.product);
+    action === "select_product";
 
   const requestedProductId =
     data?.product_id ??
@@ -87,15 +94,23 @@ export default function AgentResponse({ data, onAction }) {
     return <AcceptedOffer data={data} onAction={onAction} />;
   }
 
-  /*
-   * Product detail should win over generic product lists.
-   */
+  if (action === "CONTEXT_REQUIRED") {
+    return <ContextRequired data={data} onAction={onAction} />;
+  }
+
+  if (action === "PRICE_ABOVE_PRODUCT") {
+    return <ListedPriceResponse data={data} onAction={onAction} />;
+  }
+
   const shouldShowSingleProductDetail =
     explicitProductDetail &&
     Boolean(selectedProduct);
 
-  if (shouldShowSingleProductDetail) {
+  const shouldShowProductList =
+    products.length > 1 &&
+    !explicitProductDetail;
 
+  if (shouldShowSingleProductDetail) {
     return (
       <ProductDetail
         data={data}
@@ -105,18 +120,22 @@ export default function AgentResponse({ data, onAction }) {
     );
   }
 
-  /*
-   * The backend needs the user's target price / discount.
-   *
-   * Do not expose the internal action name.
-   */
+  if (shouldShowProductList) {
+    return (
+      <ProductList
+        products={products}
+        data={data}
+        onAction={onAction}
+      />
+    );
+  }
+
   if (
     action ===
       "NEGOTIATION_AMOUNT_REQUIRED" ||
     action ===
       "NEGOTIATION_INPUT_REQUIRED"
   ) {
-
     return (
       <NegotiationInputRequired
         data={data}
@@ -134,9 +153,6 @@ export default function AgentResponse({ data, onAction }) {
     );
   }
 
-  /*
-   * Negotiation response.
-   */
   if (
     [
       "COUNTER_OFFER",
@@ -155,7 +171,6 @@ export default function AgentResponse({ data, onAction }) {
       ].includes(action)
     )
   ) {
-
     return (
       <NegotiationResponse
         data={data}
@@ -164,16 +179,12 @@ export default function AgentResponse({ data, onAction }) {
     );
   }
 
-  /*
-   * Checkout is ready.
-   */
   if (
     action === "PAYMENT_PENDING" ||
     action === "CHECKOUT_READY" ||
     data?.checkout?.status ===
       "CHECKOUT_READY"
   ) {
-
     return (
       <CheckoutReady
         data={data}
@@ -182,9 +193,6 @@ export default function AgentResponse({ data, onAction }) {
     );
   }
 
-  /*
-   * Order successfully created.
-   */
   if (
     action === "ORDER_CREATED" ||
     data?.order?.status ===
@@ -192,7 +200,6 @@ export default function AgentResponse({ data, onAction }) {
     data?.order?.status ===
       "CONFIRMED"
   ) {
-
     return (
       <OrderSuccess
         data={data}
@@ -200,33 +207,26 @@ export default function AgentResponse({ data, onAction }) {
     );
   }
 
-  /*
-   * Product recommendation.
-   */
   if (
     action === "RECOMMEND_PRODUCT" ||
     action === "OFFER_REQUESTED" ||
     products.length > 0
   ) {
-
     return (
       <ProductList
-        products={products}
+        products={Array.isArray(data?.products) ? data.products : products}
         data={data}
         onAction={onAction}
       />
     );
   }
 
-  /*
-   * Normal conversational response.
-   */
   return (
-    <p className="leading-6 text-slate-300">
+    <p className="leading-6 text-[rgba(240,231,214,0.8)]">
       {
         data?.message ||
         data?.response ||
-        "I’m ready. Tell me what you’d like to find."
+        "I'm ready. Tell me what you'd like to find."
       }
     </p>
   );
@@ -264,20 +264,17 @@ function NegotiationInputRequired({ data, onAction }) {
 
   return (
     <div className="space-y-4">
-
       <div>
-
-        <h3 className="font-semibold text-white">
-          Let’s find a price that works for you.
+        <h3 className="font-semibold text-[#f0e7d6]">
+          Let's find a price that works for you.
         </h3>
 
-        <p className="mt-2 text-sm leading-6 text-slate-400">
+        <p className="mt-2 text-sm leading-6 text-[rgba(240,231,214,0.8)]">
           {
             data?.message ||
-            "What price would you like to pay? You can give me a target price or tell me the discount you’re looking for."
+            "What price would you like to pay? You can give me a target price or tell me the discount you're looking for."
           }
         </p>
-
       </div>
 
       <div className="grid gap-2 sm:grid-cols-2">
@@ -286,7 +283,7 @@ function NegotiationInputRequired({ data, onAction }) {
             key={suggestion}
             type="button"
             onClick={() => onAction?.("numeric_suggestion", suggestion)}
-            className="rounded-xl border border-slate-800 bg-slate-950 px-4 py-3 text-left text-sm text-slate-300 transition hover:border-violet-500/50 hover:bg-slate-900"
+            className="rounded-lg border border-[rgba(240,231,214,0.16)] bg-[#14100b] px-4 py-3 text-left text-sm text-[rgba(240,231,214,0.8)] transition-all duration-300 hover:border-[#d9a353] hover:bg-[rgba(217,163,83,0.15)] hover:text-[#d9a353]"
           >
             {suggestion}
           </button>
@@ -294,16 +291,51 @@ function NegotiationInputRequired({ data, onAction }) {
         <button
           type="button"
           onClick={() => onAction?.("close_negotiation", null, data)}
-          className="rounded-xl border border-slate-800 bg-slate-950 px-4 py-3 text-left text-sm text-slate-400 transition hover:border-amber-500/50 hover:bg-slate-900 hover:text-amber-300"
+          className="rounded-lg border border-[rgba(240,231,214,0.16)] bg-[#14100b] px-4 py-3 text-left text-sm text-[rgba(240,231,214,0.45)] transition-all duration-300 hover:border-[#d9a353] hover:bg-[rgba(217,163,83,0.15)] hover:text-[#d9a353]"
         >
           Close and discuss a different product
         </button>
       </div>
 
-      <p className="text-xs text-slate-600">
+      <p className="text-xs text-[rgba(240,231,214,0.45)]">
         Just type your target in the message box below.
       </p>
+    </div>
+  );
+}
 
+function NegotiationSuggestions({ currentPrice, data, onAction }) {
+  const step = currentPrice >= 1000 ? 100 : 50;
+  const roundedTarget = Math.max(step, Math.ceil(currentPrice / step) * step);
+  const roundedBudget = Math.max(step, Math.round(currentPrice / step) * step);
+  const suggestions = currentPrice > 0
+    ? [
+        `₹${roundedTarget}`,
+        `Rupees ${roundedBudget}`,
+        `Discount of ${roundedBudget}`,
+        "10% off",
+      ]
+    : ["10% off"];
+
+  return (
+    <div className="mt-4 grid gap-2 sm:grid-cols-2">
+      {suggestions.map((suggestion) => (
+        <button
+          key={suggestion}
+          type="button"
+          onClick={() => onAction?.("numeric_suggestion", suggestion, data)}
+          className="rounded-lg border border-[rgba(240,231,214,0.16)] bg-[#14100b] px-3 py-2.5 text-left text-sm text-[rgba(240,231,214,0.8)] transition-all duration-300 hover:border-[#d9a353] hover:bg-[rgba(217,163,83,0.15)] hover:text-[#d9a353]"
+        >
+          {suggestion}
+        </button>
+      ))}
+      <button
+        type="button"
+        onClick={() => onAction?.("close_negotiation", null, data)}
+        className="rounded-lg border border-[rgba(240,231,214,0.16)] bg-[#14100b] px-3 py-2.5 text-left text-sm text-[rgba(240,231,214,0.45)] transition-all duration-300 hover:border-[#d9a353] hover:bg-[rgba(217,163,83,0.15)] hover:text-[#d9a353]"
+      >
+        Close and discuss a different product
+      </button>
     </div>
   );
 }
@@ -347,24 +379,19 @@ function ProductList({
 
   return (
     <div className="space-y-5">
-
       <div>
-
-        <h3 className="text-base font-semibold text-white">
+        <h3 className="text-base font-semibold text-[#f0e7d6]">
           Here are a few options I found.
         </h3>
 
-        <p className="mt-1 text-xs leading-5 text-slate-500">
-          I picked these based on your request. Take a look at the options below, and I can help you compare or negotiate any of them.
+        <p className="mt-1 text-xs leading-5 text-[rgba(240,231,214,0.45)]">
+          I found {products.length} matching options. Take a look below, and I can help you compare or negotiate any of them.
         </p>
-
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">
-
         {visibleProducts.map(
           (product, index) => (
-
             <ProductCard
               key={
                 product.product_id ||
@@ -375,43 +402,32 @@ function ProductList({
               data={data}
               onAction={onAction}
             />
-
           )
         )}
-
       </div>
 
       {hasMore && (
-
         <div className="flex justify-center pt-2">
-
           <button
             onClick={loadMore}
-            className="rounded-xl border border-slate-700 bg-slate-900 px-5 py-2.5 text-xs font-medium text-slate-300 transition hover:bg-slate-800"
+            className="rounded-lg border border-[rgba(240,231,214,0.16)] bg-[#14100b] px-5 py-2.5 text-xs font-medium text-[rgba(240,231,214,0.8)] transition-all duration-300 hover:border-[#d9a353] hover:bg-[rgba(217,163,83,0.15)] hover:text-[#d9a353]"
           >
             Show more options
           </button>
-
         </div>
-
       )}
 
       {!products.length && (
-
-        <div className="rounded-xl border border-slate-800 bg-slate-950 p-5 text-center">
-
-          <p className="text-sm text-slate-400">
-            I couldn’t find a close match for that request.
+        <div className="rounded-lg border border-[rgba(240,231,214,0.16)] bg-[#14100b] p-5 text-center">
+          <p className="text-sm text-[rgba(240,231,214,0.45)]">
+            I couldn't find a close match for that request.
           </p>
 
-          <p className="mt-1 text-xs text-slate-600">
+          <p className="mt-1 text-xs text-[rgba(240,231,214,0.45)]">
             Try changing the product type, budget, or other requirement.
           </p>
-
         </div>
-
       )}
-
     </div>
   );
 }
@@ -465,6 +481,7 @@ function ProductDetail({
     product?.name ??
     product?.product_name ??
     `Product ${productId}`;
+
   const [inCart, setInCart] = useState(() => cartContainsProduct(productId));
 
   function handleBuyAction() {
@@ -480,63 +497,49 @@ function ProductDetail({
 
   return (
     <div className="max-w-2xl space-y-5">
-
       <div>
-
-        <p className="leading-6 text-slate-300">
+        <p className="leading-6 text-[rgba(240,231,214,0.8)]">
           {
             data?.message ||
-            "Sure. Here’s a closer look at that product."
+            "Sure. Here's a closer look at that product."
           }
         </p>
-
       </div>
 
-      <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-950">
-
+      <div className="overflow-hidden rounded-lg border border-[rgba(240,231,214,0.16)] bg-[#14100b] transition-all duration-300">
         <div className="p-5">
-
           <div className="flex items-start justify-between gap-4">
-
             <div>
-
-              <p className="text-xs font-medium uppercase tracking-wide text-violet-400">
+              <p className="text-xs font-medium uppercase tracking-wide text-[#d9a353]">
                 Product details
               </p>
 
-              <h3 className="mt-2 text-xl font-semibold text-white">
+              <h3 className="mt-2 text-xl font-semibold text-[#f0e7d6]">
                 {productName}
               </h3>
 
               {category && (
-
-                <p className="mt-1 text-xs text-slate-500">
-                 category-{category}
+                <p className="mt-1 text-xs text-[rgba(240,231,214,0.45)]">
+                  {category}
                 </p>
-
               )}
-
             </div>
 
             {stock != null && (
-
-              <span className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-[11px] font-medium text-emerald-400">
+              <span className="rounded-full border border-[#d9a353]/20 bg-[rgba(217,163,83,0.15)] px-3 py-1 text-[11px] font-medium text-[#d9a353]">
                 {Number(stock) > 0
                   ? "In stock"
                   : "Out of stock"}
               </span>
-
             )}
-
           </div>
 
           <div className="mt-6">
-
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-[rgba(240,231,214,0.45)]">
               Current price
             </p>
 
-            <p className="mt-1 text-3xl font-bold text-white">
+            <p className="mt-1 text-3xl font-bold text-[#f0e7d6]">
               ₹
               {price.toLocaleString(
                 "en-IN",
@@ -546,49 +549,44 @@ function ProductDetail({
                 }
               )}
             </p>
-
           </div>
 
-          <div className="mt-5 flex items-center justify-between rounded-xl border border-slate-800 bg-slate-900 px-3 py-2">
-            <span className="text-xs text-slate-400">Quantity</span>
+          <div className="mt-5 flex items-center justify-between rounded-lg border border-[rgba(240,231,214,0.16)] bg-[#0e0b08] px-3 py-2">
+            <span className="text-xs text-[rgba(240,231,214,0.45)]">Quantity</span>
             <div className="flex items-center gap-3">
               <button
                 type="button"
                 disabled={quantity <= 1}
                 onClick={() => setQuantity((value) => Math.max(1, value - 1))}
-                className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-700 text-slate-300 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+                className="flex h-8 w-8 items-center justify-center rounded-lg border border-[rgba(240,231,214,0.16)] text-[rgba(240,231,214,0.8)] transition-all duration-300 hover:border-[#d9a353] hover:text-[#d9a353] disabled:cursor-not-allowed disabled:opacity-40"
               >
                 -
               </button>
-              <span className="min-w-[24px] text-center text-sm font-medium text-white">
+              <span className="min-w-[24px] text-center text-sm font-medium text-[#f0e7d6]">
                 {quantity}
               </span>
               <button
                 type="button"
                 disabled={quantity >= 10}
                 onClick={() => setQuantity((value) => Math.min(10, value + 1))}
-                className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-700 text-slate-300 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+                className="flex h-8 w-8 items-center justify-center rounded-lg border border-[rgba(240,231,214,0.16)] text-[rgba(240,231,214,0.8)] transition-all duration-300 hover:border-[#d9a353] hover:text-[#d9a353] disabled:cursor-not-allowed disabled:opacity-40"
               >
                 +
               </button>
             </div>
           </div>
 
-
-          <div className="mt-6 rounded-xl border border-slate-800 bg-slate-900 p-4">
-
-            <p className="text-xs font-medium text-slate-400">
+          <div className="mt-6 rounded-lg border border-[rgba(240,231,214,0.16)] bg-[#0e0b08] p-4">
+            <p className="text-xs font-medium text-[rgba(240,231,214,0.45)]">
               What would you like to do?
             </p>
 
-            <p className="mt-1 text-xs leading-5 text-slate-600">
+            <p className="mt-1 text-xs leading-5 text-[rgba(240,231,214,0.45)]">
               You can buy it at the current price, or I can try to get you a better deal.
             </p>
-
           </div>
 
           <div className="mt-5 grid gap-3 sm:grid-cols-2">
-
             <button
               onClick={() =>
                 onAction?.(
@@ -597,30 +595,26 @@ function ProductDetail({
                   data
                 )
               }
-              className="rounded-xl border border-violet-500/40 bg-violet-500/10 px-4 py-3 text-sm font-medium text-violet-300 transition hover:bg-violet-500/20"
+              className="rounded-lg border border-[#d9a353]/30 bg-[rgba(217,163,83,0.15)] px-4 py-3 text-sm font-medium text-[#d9a353] transition-all duration-300 hover:bg-[rgba(217,163,83,0.25)]"
             >
               Negotiate Price
             </button>
 
             <button
               onClick={handleBuyAction}
-              className={`rounded-xl px-4 py-3 text-sm font-medium text-white transition ${
+              className={`rounded-lg px-4 py-3 text-sm font-medium text-[#0e0b08] transition-all duration-300 ${
                 inCart
-                  ? "border border-slate-700 bg-slate-800 hover:bg-slate-700"
-                  : "bg-violet-600 hover:bg-violet-500"
+                  ? "border border-[rgba(240,231,214,0.16)] bg-[#0e0b08] text-[rgba(240,231,214,0.8)] hover:border-[#d9a353] hover:text-[#d9a353]"
+                  : "bg-[#d9a353] hover:bg-[#f0e7d6]"
               }`}
             >
               {inCart
                 ? "Remove from cart"
                 : `Buy at ₹${price.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`}
             </button>
-
           </div>
-
         </div>
-
       </div>
-
     </div>
   );
 }
@@ -656,7 +650,6 @@ function NegotiationResponse({
     {};
 
   const product = {
-
     product_id:
       currentProduct.product_id ??
       currentProduct.id ??
@@ -674,7 +667,6 @@ function NegotiationResponse({
       currentProduct.category ??
       currentProduct.category_name ??
       offer.category,
-
   };
 
   const original = Number(
@@ -737,14 +729,17 @@ function NegotiationResponse({
     targetWasNotReached ||
     targetDiscountNotReached ||
     actionIndicatesLimit(data?.action);
+
   const maximumDiscount = Number(
     offer.maximum_discount_percent ??
     data?.policy?.maximum_discount_percent ??
     20
   );
+
   const offeredDiscount = Number(
     offer.discount_percent ?? discountPercentage
   );
+
   const maximumReached =
     data?.action === "MAX_DISCOUNT_REACHED" ||
     offer.is_final_offer === true ||
@@ -754,59 +749,47 @@ function NegotiationResponse({
       offer.max_negotiation_rounds != null &&
       Number(offer.negotiation_round) >= Number(offer.max_negotiation_rounds)
     );
+  const finalOffer = data?.final_offer === true;
 
   return (
     <div className="space-y-5">
-
       <div>
-
         <div className="flex items-center gap-2">
-
-          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-violet-500/10 text-violet-300">
+          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-[rgba(217,163,83,0.15)] text-[#d9a353]">
             ✦
           </div>
 
-          <h3 className="font-semibold text-white">
+          <h3 className="font-semibold text-[#f0e7d6]">
             I found a better price for you.
           </h3>
-
         </div>
 
-        <p className="mt-2 text-xs leading-5 text-slate-500">
-          I checked the available offer against the merchant’s pricing limits.
+        <p className="mt-2 text-xs leading-5 text-[rgba(240,231,214,0.45)]">
+          I checked the available offer against the merchant's pricing limits.
         </p>
-
       </div>
 
-      <div className="rounded-2xl border border-violet-500/30 bg-violet-500/5 p-5">
-
+      <div className="rounded-lg border border-[#d9a353]/30 bg-[rgba(217,163,83,0.05)] p-5 transition-all duration-300">
         <div className="flex items-start justify-between gap-4">
-
           <div>
-
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-[rgba(240,231,214,0.45)]">
               Your offer
             </p>
 
-            <p className="mt-1 font-medium text-white">
+            <p className="mt-1 font-medium text-[#f0e7d6]">
               {product.name}
             </p>
-
           </div>
 
           {discountPercentage > 0 && (
-
-            <span className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-[11px] font-semibold text-emerald-400">
+            <span className="rounded-full border border-[#d9a353]/20 bg-[rgba(217,163,83,0.15)] px-3 py-1 text-[11px] font-semibold text-[#d9a353]">
               {discountPercentage.toFixed(1)}% off
             </span>
-
           )}
-
         </div>
 
         <div className="mt-6">
-
-          <p className="text-sm text-slate-500 line-through">
+          <p className="text-sm text-[rgba(240,231,214,0.45)] line-through">
             ₹
             {original.toLocaleString(
               "en-IN",
@@ -817,7 +800,7 @@ function NegotiationResponse({
             )}
           </p>
 
-          <p className="mt-1 text-3xl font-bold text-white">
+          <p className="mt-1 text-3xl font-bold text-[#f0e7d6]">
             ₹
             {negotiated.toLocaleString(
               "en-IN",
@@ -829,8 +812,7 @@ function NegotiationResponse({
           </p>
 
           {discountAmount > 0 && (
-
-            <p className="mt-2 text-xs text-emerald-400">
+            <p className="mt-2 text-xs text-[#d9a353]">
               You save ₹
               {discountAmount.toLocaleString(
                 "en-IN",
@@ -840,20 +822,16 @@ function NegotiationResponse({
                 }
               )}
             </p>
-
           )}
-
         </div>
 
         {requestedTarget != null && (
-
-          <div className="mt-5 rounded-xl border border-slate-800 bg-slate-950 p-4">
-
-            <p className="text-xs text-slate-500">
+          <div className="mt-5 rounded-lg border border-[rgba(240,231,214,0.16)] bg-[#0e0b08] p-4">
+            <p className="text-xs text-[rgba(240,231,214,0.45)]">
               Your target
             </p>
 
-            <p className="mt-1 text-sm font-medium text-white">
+            <p className="mt-1 text-sm font-medium text-[#f0e7d6]">
               ₹
               {Number(
                 requestedTarget
@@ -864,68 +842,51 @@ function NegotiationResponse({
                 }
               )}
             </p>
-
           </div>
-
         )}
 
         {targetDiscount != null && (
-
-          <div className="mt-3 rounded-xl border border-slate-800 bg-slate-950 p-4">
-
-            <p className="text-xs text-slate-500">
+          <div className="mt-3 rounded-lg border border-[rgba(240,231,214,0.16)] bg-[#0e0b08] p-4">
+            <p className="text-xs text-[rgba(240,231,214,0.45)]">
               Requested discount
             </p>
 
-            <p className="mt-1 text-sm font-medium text-white">
+            <p className="mt-1 text-sm font-medium text-[#f0e7d6]">
               {Number(
                 targetDiscount
               ).toFixed(1)}
               % off
             </p>
-
           </div>
-
         )}
 
         {limitedOffer && (
-
-          <div className="mt-5 rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
-
-            <p className="text-xs font-medium text-amber-300">
+          <div className="mt-5 rounded-lg border border-[#d9a353]/20 bg-[rgba(217,163,83,0.15)] p-4">
+            <p className="text-xs font-medium text-[#d9a353]">
               This is the best price I can offer.
             </p>
 
-            <p className="mt-1 text-xs leading-5 text-slate-500">
-
+            <p className="mt-1 text-xs leading-5 text-[rgba(240,231,214,0.45)]">
               {offerReason ||
-                "The merchant’s pricing policy does not allow me to go lower than this."}
-
+                "The merchant's pricing policy does not allow me to go lower than this."}
             </p>
-
           </div>
-
         )}
 
         {!limitedOffer &&
           offerReason && (
-
-            <div className="mt-5 rounded-xl border border-slate-800 bg-slate-950 p-4">
-
-              <p className="text-xs font-medium text-slate-400">
+            <div className="mt-5 rounded-lg border border-[rgba(240,231,214,0.16)] bg-[#0e0b08] p-4">
+              <p className="text-xs font-medium text-[rgba(240,231,214,0.45)]">
                 Why this offer?
               </p>
 
-              <p className="mt-1 text-xs leading-5 text-slate-500">
+              <p className="mt-1 text-xs leading-5 text-[rgba(240,231,214,0.45)]">
                 {offerReason}
               </p>
-
             </div>
-
           )}
 
         <div className="mt-6 grid gap-2 sm:grid-cols-2">
-
           <button
             onClick={() =>
               onAction?.(
@@ -934,12 +895,12 @@ function NegotiationResponse({
                 data
               )
             }
-            className="rounded-xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-emerald-500"
+            className="rounded-lg bg-[#d9a353] px-4 py-3 text-sm font-semibold text-[#0e0b08] transition-all duration-300 hover:bg-[#f0e7d6]"
           >
             Accept & continue
           </button>
 
-          {!maximumReached && (
+          {!maximumReached && !finalOffer && (
             <button
               onClick={() =>
                 onAction?.(
@@ -948,20 +909,43 @@ function NegotiationResponse({
                   data
                 )
               }
-              className="rounded-xl border border-slate-700 px-4 py-3 text-sm font-medium text-slate-300 transition hover:bg-slate-800"
+              className="rounded-lg border border-[rgba(240,231,214,0.16)] bg-[#14100b] px-4 py-3 text-sm font-medium text-[rgba(240,231,214,0.8)] transition-all duration-300 hover:border-[#d9a353] hover:text-[#d9a353]"
             >
               Try again
             </button>
           )}
 
+          {finalOffer && (
+            <button
+              type="button"
+              onClick={() => onAction?.("close_negotiation", null, data)}
+              className="rounded-lg border border-[rgba(240,231,214,0.16)] bg-[#14100b] px-4 py-3 text-sm font-medium text-[rgba(240,231,214,0.8)] transition-all duration-300 hover:border-[#d9a353] hover:text-[#d9a353]"
+            >
+              Close and discuss a different product
+            </button>
+          )}
         </div>
 
-        <p className="mt-3 text-center text-[11px] text-slate-600">
-          Accepting this offer will take you to secure checkout. You won’t be charged from this chat screen.
+        {maximumReached && !finalOffer && (
+          <div className="mt-4 rounded-lg border border-[#d9a353]/20 bg-[rgba(217,163,83,0.08)] p-4">
+            <p className="text-sm font-medium text-[#d9a353]">
+              I have completed the automatic negotiation rounds.
+            </p>
+            <p className="mt-1 text-xs leading-5 text-[rgba(240,231,214,0.65)]">
+              Enter the discount or price you are looking in the same format as shown below . I will check it and return the best possible price or a counter-offer based on the merchant policy.
+            </p>
+            <NegotiationSuggestions
+              currentPrice={original}
+              data={data}
+              onAction={onAction}
+            />
+          </div>
+        )}
+
+        <p className="mt-3 text-center text-[11px] text-[rgba(240,231,214,0.45)]">
+          Accepting this offer will take you to secure checkout. You won't be charged from this chat screen.
         </p>
-
       </div>
-
     </div>
   );
 }
@@ -1029,52 +1013,56 @@ function AcceptedOffer({ data, onAction }) {
       },
       data
     );
-      setInCart(true);
+    setInCart(true);
   }
 
   return (
     <div className="space-y-4">
       <div>
-        <h3 className="font-semibold text-white">Offer accepted </h3>
-        <p className="mt-2 text-sm text-slate-400">
+        <h3 className="font-semibold text-[#f0e7d6]">Offer accepted</h3>
+        <p className="mt-2 text-sm text-[rgba(240,231,214,0.8)]">
           {offer.name || product.name || `Product ${productId}`}
         </p>
       </div>
-      <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-5">
-        <p className="text-3xl font-bold text-white">
+
+      <div className="rounded-lg border border-[#d9a353]/20 bg-[rgba(217,163,83,0.05)] p-5 transition-all duration-300">
+        <p className="text-3xl font-bold text-[#f0e7d6]">
           ₹{finalPrice.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
         </p>
-        <div className="mt-5 flex items-center justify-between rounded-xl border border-slate-800 bg-slate-950 px-3 py-2">
-          <span className="text-xs text-slate-400">Quantity</span>
+
+        <div className="mt-5 flex items-center justify-between rounded-lg border border-[rgba(240,231,214,0.16)] bg-[#0e0b08] px-3 py-2">
+          <span className="text-xs text-[rgba(240,231,214,0.45)]">Quantity</span>
           <div className="flex items-center gap-3">
             <button
               type="button"
               disabled={quantity <= 1}
               onClick={() => setQuantity((value) => Math.max(1, value - 1))}
-              className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-700 text-slate-300 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+              className="flex h-8 w-8 items-center justify-center rounded-lg border border-[rgba(240,231,214,0.16)] text-[rgba(240,231,214,0.8)] transition-all duration-300 hover:border-[#d9a353] hover:text-[#d9a353] disabled:cursor-not-allowed disabled:opacity-40"
             >
               -
             </button>
-            <span className="min-w-[24px] text-center text-sm font-medium text-white">{quantity}</span>
+            <span className="min-w-[24px] text-center text-sm font-medium text-[#f0e7d6]">{quantity}</span>
             <button
               type="button"
               disabled={quantity >= 10}
               onClick={() => setQuantity((value) => Math.min(10, value + 1))}
-              className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-700 text-slate-300 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+              className="flex h-8 w-8 items-center justify-center rounded-lg border border-[rgba(240,231,214,0.16)] text-[rgba(240,231,214,0.8)] transition-all duration-300 hover:border-[#d9a353] hover:text-[#d9a353] disabled:cursor-not-allowed disabled:opacity-40"
             >
               +
             </button>
           </div>
         </div>
-        <p className="mt-3 text-sm text-slate-400">
-          Total: <span className="font-semibold text-white">₹{totalPrice.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</span>
+
+        <p className="mt-3 text-sm text-[rgba(240,231,214,0.8)]">
+          Total: <span className="font-semibold text-[#f0e7d6]">₹{totalPrice.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</span>
         </p>
+
         {suggestion && (
-          <div className="mt-5 rounded-xl border border-slate-800 bg-slate-950 p-4">
-            <p className="text-xs font-medium text-slate-400">
+          <div className="mt-5 rounded-lg border border-[rgba(240,231,214,0.16)] bg-[#0e0b08] p-4">
+            <p className="text-xs font-medium text-[rgba(240,231,214,0.45)]">
               You might also like
             </p>
-            <p className="mt-2 text-sm leading-6 text-slate-300">
+            <p className="mt-2 text-sm leading-6 text-[rgba(240,231,214,0.8)]">
               {suggestionIsUpsell
                 ? `You might also want ${suggestionName}. It's slightly more expensive, but it has a higher match score.`
                 : `Since you're buying ${product.name || `Product ${productId}`}, I found another item that pairs well with it.`}
@@ -1082,23 +1070,24 @@ function AcceptedOffer({ data, onAction }) {
             <button
               type="button"
               onClick={() => onAction?.("select_product", suggestion, { ...data, product: suggestion })}
-              className="mt-3 w-full rounded-xl border border-slate-800 p-3 text-left transition hover:border-emerald-500/50 hover:bg-slate-900"
+              className="mt-3 w-full rounded-lg border border-[rgba(240,231,214,0.16)] p-3 text-left transition-all duration-300 hover:border-[#d9a353] hover:bg-[rgba(217,163,83,0.15)]"
             >
-              <p className="text-sm font-medium text-white">{suggestionName}</p>
+              <p className="text-sm font-medium text-[#f0e7d6]">{suggestionName}</p>
               {suggestionPrice != null && (
-                <p className="mt-2 text-sm text-slate-300">
+                <p className="mt-2 text-sm text-[rgba(240,231,214,0.8)]">
                   ₹{Number(suggestionPrice).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
                 </p>
               )}
             </button>
           </div>
         )}
+
         <button
           onClick={addAcceptedOfferToCart}
-          className={`mt-5 w-full rounded-xl px-4 py-3 text-sm font-semibold text-white ${
+          className={`mt-5 w-full rounded-lg px-4 py-3 text-sm font-semibold text-[#0e0b08] transition-all duration-300 ${
             inCart
-              ? "border border-slate-700 bg-slate-800 hover:bg-slate-700"
-              : "bg-emerald-600 hover:bg-emerald-500"
+              ? "border border-[rgba(240,231,214,0.16)] bg-[#0e0b08] text-[rgba(240,231,214,0.8)] hover:border-[#d9a353] hover:text-[#d9a353]"
+              : "bg-[#d9a353] hover:bg-[#f0e7d6]"
           }`}
         >
           {inCart ? "Remove from cart" : "Accept and add to cart"}
@@ -1134,40 +1123,33 @@ function CheckoutReady({
 
   return (
     <div className="space-y-5">
-
       <div>
-
         <div className="flex items-center gap-2">
-
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-400">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[rgba(217,163,83,0.15)] text-[#d9a353]">
             ✓
           </div>
 
-          <h3 className="font-semibold text-white">
+          <h3 className="font-semibold text-[#f0e7d6]">
             Your deal is ready.
           </h3>
-
         </div>
 
-        <p className="mt-2 text-sm leading-6 text-slate-400">
+        <p className="mt-2 text-sm leading-6 text-[rgba(240,231,214,0.8)]">
           The price has been approved and you can continue to secure checkout.
         </p>
-
       </div>
 
-      <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-5">
-
-        <p className="text-xs text-slate-500">
+      <div className="rounded-lg border border-[#d9a353]/20 bg-[rgba(217,163,83,0.05)] p-5 transition-all duration-300">
+        <p className="text-xs text-[rgba(240,231,214,0.45)]">
           Ready to checkout
         </p>
 
-        <p className="mt-2 font-medium text-white">
+        <p className="mt-2 font-medium text-[#f0e7d6]">
           {productName}
         </p>
 
         {finalPrice != null && (
-
-          <p className="mt-3 text-2xl font-bold text-white">
+          <p className="mt-3 text-2xl font-bold text-[#d9a353]">
             ₹
             {Number(
               finalPrice
@@ -1179,7 +1161,6 @@ function CheckoutReady({
               }
             )}
           </p>
-
         )}
 
         <button
@@ -1190,13 +1171,11 @@ function CheckoutReady({
               data
             )
           }
-          className="mt-5 w-full rounded-xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-emerald-500"
+          className="mt-5 w-full rounded-lg bg-[#d9a353] px-4 py-3 text-sm font-semibold text-[#0e0b08] transition-all duration-300 hover:bg-[#f0e7d6]"
         >
           Continue to secure checkout
         </button>
-
       </div>
-
     </div>
   );
 }
@@ -1213,36 +1192,30 @@ function OrderSuccess({ data }) {
     data?.order?.id;
 
   return (
-    <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-6 text-center">
-
-      <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-emerald-500/10 text-2xl text-emerald-400">
+    <div className="rounded-lg border border-[#d9a353]/20 bg-[rgba(217,163,83,0.05)] p-6 text-center transition-all duration-300">
+      <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-[rgba(217,163,83,0.15)] text-2xl text-[#d9a353]">
         ✓
       </div>
 
-      <h3 className="mt-4 text-lg font-semibold text-white">
+      <h3 className="mt-4 text-lg font-semibold text-[#f0e7d6]">
         Your order is confirmed.
       </h3>
 
-      <p className="mt-2 text-sm leading-6 text-slate-400">
+      <p className="mt-2 text-sm leading-6 text-[rgba(240,231,214,0.8)]">
         Payment was verified and your order has been successfully created.
       </p>
 
       {orderId && (
-
-        <div className="mt-5 rounded-xl border border-slate-800 bg-slate-950 px-4 py-3">
-
-          <p className="text-[11px] uppercase tracking-wide text-slate-600">
+        <div className="mt-5 rounded-lg border border-[rgba(240,231,214,0.16)] bg-[#0e0b08] px-4 py-3">
+          <p className="text-[11px] uppercase tracking-wide text-[rgba(240,231,214,0.45)]">
             Order
           </p>
 
-          <p className="mt-1 text-xs font-medium text-slate-400">
+          <p className="mt-1 text-xs font-medium text-[rgba(240,231,214,0.8)]">
             {orderId}
           </p>
-
         </div>
-
       )}
-
     </div>
   );
 }
@@ -1253,11 +1226,121 @@ function OrderSuccess({ data }) {
    ============================================================ */
 
 function actionIndicatesLimit(action) {
-
   return [
     "MAX_DISCOUNT_REACHED",
     "LIMITED_OFFER",
   ].includes(action);
-
 }
 
+function ContextRequired({ data, onAction }) {
+  const [selectedContext, setSelectedContext] = useState({});
+  const missingContext = data?.customer_intent?.missing_context || [];
+  const categories = [
+    "Category 0",
+    "Category 1",
+    "Category 2",
+    "Category 3",
+    "Category 4",
+    "Category 5",
+    "Category 6",
+    "Category 7",
+  ];
+  const budgets = [
+    "Under ₹500",
+    "Under ₹1,000",
+    "Under ₹2,500",
+    "Under ₹5,000",
+    "Under ₹25,000",
+  ];
+  const urgencies = ["Low", "Medium", "High"];
+
+  function selectOption(type, option) {
+    const nextContext = {
+      ...selectedContext,
+      [type]: option,
+    };
+    setSelectedContext(nextContext);
+
+    if (missingContext.every((field) => nextContext[field])) {
+      onAction?.("context_complete", nextContext, data);
+    }
+  }
+
+  function optionGroup(type, label, options) {
+    return (
+      <div>
+        <p className="mb-2 text-xs font-medium uppercase tracking-wide text-[#d9a353]">
+          {label}
+        </p>
+        <div className="grid gap-2 sm:grid-cols-2">
+          {options.map((option) => (
+            <button
+              key={option}
+              type="button"
+              onClick={() => selectOption(type, option)}
+              className={`rounded-lg border px-3 py-2.5 text-left text-sm transition-all duration-300 ${
+                selectedContext[type] === option
+                  ? "border-[#d9a353] bg-[rgba(217,163,83,0.2)] text-[#d9a353]"
+                  : "border-[rgba(240,231,214,0.16)] bg-[#14100b] text-[rgba(240,231,214,0.8)] hover:border-[#d9a353] hover:bg-[rgba(217,163,83,0.15)] hover:text-[#d9a353]"
+              }`}
+            >
+              {option}
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-5">
+      <p className="leading-6 text-[rgba(240,231,214,0.8)]">
+        {data?.message || "Tell me a few details so I can find the right products."}
+      </p>
+
+      {missingContext.includes("category") && optionGroup("category", "Product category", categories)}
+      {missingContext.includes("budget") && optionGroup("budget", "Budget", budgets)}
+      {missingContext.includes("urgency") && optionGroup("urgency", "Purchase urgency", urgencies)}
+
+      <p className="text-xs text-[rgba(240,231,214,0.45)]">
+        Selected {missingContext.filter((field) => selectedContext[field]).length} of {missingContext.length}. Choose all options to search.
+      </p>
+    </div>
+  );
+}
+
+function ListedPriceResponse({ data, onAction }) {
+  const product = data?.products?.[0] || data?.product || {};
+  const productId = product.product_id ?? product.id ?? data?.product_id;
+  const price = Number(
+    product.price ?? product.current_price ?? data?.offer?.original_price ?? 0
+  );
+  const name = product.name || product.product_name || `Product ${productId}`;
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h3 className="font-semibold text-[#f0e7d6]">
+          This product already costs less than your target.
+        </h3>
+        <p className="mt-2 text-sm leading-6 text-[rgba(240,231,214,0.8)]">
+          The real current price for {name} is shown below. No discount is needed.
+        </p>
+      </div>
+
+      <div className="rounded-lg border border-[rgba(240,231,214,0.16)] bg-[#14100b] p-5">
+        <p className="text-xs text-[rgba(240,231,214,0.45)]">Current price</p>
+        <p className="mt-1 text-3xl font-bold text-[#f0e7d6]">
+          ₹{price.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+        </p>
+        <button
+          type="button"
+          onClick={() => onAction?.("add_to_cart", { ...product, price }, data)}
+          className="mt-5 w-full rounded-lg bg-[#d9a353] px-4 py-3 text-sm font-semibold text-[#0e0b08] transition-all duration-300 hover:bg-[#f0e7d6]"
+        >
+          Buy at current price
+        </button>
+      </div>
+    </div>
+  );
+}

@@ -36,10 +36,10 @@ function ProductCard({
   );
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 transition hover:border-violet-500/40">
+    <div className="overflow-hidden rounded-lg border border-[rgba(240,231,214,0.16)] bg-[#14100b] transition-all duration-300 hover:border-[#d9a353] hover:shadow-lg">
 
       {/* IMAGE */}
-      <div className="flex h-48 items-center justify-center bg-slate-900">
+      <div className="flex h-48 items-center justify-center bg-[#0e0b08]">
         {image ? (
           <img
             src={image}
@@ -47,7 +47,7 @@ function ProductCard({
             className="h-full w-full object-cover"
           />
         ) : (
-          <div className="text-4xl text-slate-700">
+          <div className="text-4xl text-[rgba(240,231,214,0.16)]">
             ◇
           </div>
         )}
@@ -57,11 +57,11 @@ function ProductCard({
       <div className="p-4">
 
         <div className="mb-2">
-          <p className="text-xs text-slate-500">
-            category-{category}
+          <p className="text-xs text-[rgba(240,231,214,0.45)]">
+            Category {category}
           </p>
 
-          <h3 className="mt-1 font-medium text-white">
+          <h3 className="mt-1 font-medium text-[#f0e7d6]">
             {name}
           </h3>
         </div>
@@ -70,11 +70,11 @@ function ProductCard({
         <div className="mb-4 flex items-end justify-between">
 
           <div>
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-[rgba(240,231,214,0.45)]">
               Price
             </p>
 
-            <p className="text-xl font-semibold text-white">
+            <p className="text-xl font-semibold text-[#f0e7d6]">
               ₹{price.toLocaleString("en-IN", {
                 minimumFractionDigits: 2,
                 maximumFractionDigits: 2,
@@ -82,32 +82,32 @@ function ProductCard({
             </p>
           </div>
 
-          <span className="rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-400">
+          <span className="rounded-full bg-[rgba(217,163,83,0.15)] px-2 py-1 text-[10px] text-[#d9a353]">
             Available
           </span>
 
         </div>
 
         {/* QUANTITY */}
-        <div className="mb-4 flex items-center justify-between rounded-xl border border-slate-800 bg-slate-900 px-3 py-2">
-          <span className="text-xs text-slate-400">Quantity</span>
+        <div className="mb-4 flex items-center justify-between rounded-lg border border-[rgba(240,231,214,0.16)] bg-[#0e0b08] px-3 py-2">
+          <span className="text-xs text-[rgba(240,231,214,0.45)]">Quantity</span>
           <div className="flex items-center gap-3">
             <button
               type="button"
               disabled={quantity <= 1}
               onClick={() => setQuantity((value) => Math.max(1, value - 1))}
-              className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-700 text-slate-300 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+              className="flex h-7 w-7 items-center justify-center rounded-lg border border-[rgba(240,231,214,0.16)] text-[rgba(240,231,214,0.8)] transition-all duration-300 hover:border-[#d9a353] hover:text-[#d9a353] disabled:cursor-not-allowed disabled:opacity-40"
             >
               -
             </button>
-            <span className="min-w-[20px] text-center text-sm font-medium text-white">
+            <span className="min-w-[20px] text-center text-sm font-medium text-[#f0e7d6]">
               {quantity}
             </span>
             <button
               type="button"
               disabled={quantity >= 10}
               onClick={() => setQuantity((value) => Math.min(10, value + 1))}
-              className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-700 text-slate-300 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+              className="flex h-7 w-7 items-center justify-center rounded-lg border border-[rgba(240,231,214,0.16)] text-[rgba(240,231,214,0.8)] transition-all duration-300 hover:border-[#d9a353] hover:text-[#d9a353] disabled:cursor-not-allowed disabled:opacity-40"
             >
               +
             </button>
@@ -125,7 +125,7 @@ function ProductCard({
                 data
               )
             }
-            className="rounded-xl border border-slate-700 px-3 py-2.5 text-xs font-medium text-slate-300 transition hover:bg-slate-800"
+            className="rounded-lg border border-[rgba(240,231,214,0.16)] px-3 py-2.5 text-xs font-medium text-[rgba(240,231,214,0.8)] transition-all duration-300 hover:border-[#d9a353] hover:text-[#d9a353]"
           >
             View Product
           </button>
@@ -138,7 +138,7 @@ function ProductCard({
                 data
               )
             }
-            className="rounded-xl bg-violet-600 px-3 py-2.5 text-xs font-medium text-white transition hover:bg-violet-500"
+            className="rounded-lg bg-[#d9a353] px-3 py-2.5 text-xs font-medium text-[#0e0b08] transition-all duration-300 hover:bg-[#f0e7d6]"
           >
             Negotiate
           </button>

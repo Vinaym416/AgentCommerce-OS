@@ -1416,7 +1416,7 @@ import re
 import sys
 import pandas as pd
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 
 # ============================================================
@@ -1526,6 +1526,29 @@ class CommerceAgent:
             "All agent tools initialized."
         )
 
+    def get_agent_status(self) -> List[Dict[str, str]]:
+        """Return the live status of the components used by this session."""
+        components = [
+            ("Buyer Agent", self.buyer_agent),
+            ("Product Retriever", self.product_retriever),
+            ("Customer Context", self.customer_context),
+            ("Opportunity Engine", self.opportunity_engine),
+            ("Merchant Decision Engine", self.merchant_engine),
+            ("Negotiation Agent", self.negotiation_agent),
+            ("Commerce Execution Agent", self.execution_agent),
+            ("Policy Engine", self.policy_engine),
+            ("Agent Memory", self.memory),
+            ("Transaction Manager", self.transaction_manager),
+        ]
+        return [
+            {
+                "name": name,
+                "implementation": type(component).__name__,
+                "status": "initialized" if component is not None else "unavailable",
+            }
+            for name, component in components
+        ]
+
     # ========================================================
     # MAIN PROCESS
     # ========================================================
@@ -1543,6 +1566,7 @@ class CommerceAgent:
         execute_payment: bool = False,
         simulate_failure: bool = False,
         session_id: Optional[str] = None,
+        progress_callback: Optional[Callable[[Dict[str, str]], None]] = None,
     ) -> Dict[str, Any]:
 
         if not message or not message.strip():
@@ -1554,18 +1578,68 @@ class CommerceAgent:
             raise ValueError("quantity must be between 1 and 10")
 
         trace: List[str] = []
+
+        def progress(agent: str, status: str, message: str):
+            if progress_callback is not None:
+                progress_callback({
+                    "agent": agent,
+                    "status": status,
+                    "message": message,
+                })
+
+        original_message = message
         session = (
             ChatSessionStore().get(session_id)
             if session_id
             else None
         )
 
+        pending_context_message = self._pending_context_message(session)
+        if pending_context_message:
+            message = f"{pending_context_message} {message}"
+
+        explicit_catalog_search = (
+            self._is_new_catalog_search(message)
+            or self._is_budget_only_catalog_search(message)
+        )
+        if (
+            explicit_catalog_search
+            and button_action != "close_negotiation"
+            and not self._is_acceptance_message(message)
+            and not self._is_product_reference(message)
+            and (
+                not self._is_price_followup(message)
+                or self._is_budget_only_catalog_search(message)
+            )
+        ):
+            missing_context = []
+            if not self._has_explicit_budget(message):
+                if not self._has_explicit_category(message):
+                    missing_context.append("category")
+                missing_context.append("budget")
+                if not self._has_explicit_urgency(message):
+                    missing_context.append("urgency")
+            if missing_context:
+                return {
+                    "message": self._shopping_context_message(missing_context),
+                    "action": "CONTEXT_REQUIRED",
+                    "final_action": "CONTEXT_REQUIRED",
+                    "products": [],
+                    "offer": None,
+                    "transaction": None,
+                    "customer_intent": {
+                        "missing_context": missing_context,
+                    },
+                    "agent_trace": ["SHOPPING_CONTEXT_PREFLIGHT"],
+                }
+
         is_new_search = (
             customer_id is not None
-            and product_id is None
+            and (product_id is None or explicit_catalog_search)
             and not self._is_acceptance_message(message)
+            and self._extract_target_price(message) is None
             and (
-                self._is_new_catalog_search(message)
+                explicit_catalog_search
                 or not self._is_product_reference(message)
                 and not self._is_price_followup(message)
             )
@@ -1608,15 +1682,7 @@ class CommerceAgent:
         ):
             transaction = None
 
-        pending_offer = (
-            self.memory.get_pending_offer(customer_id)
-            if customer_id is not None
-            else None
-        )
-
         if (
-            pending_offer is not None
-            and
             transaction is not None
             and self._is_acceptance_message(message)
             and transaction.status in {
@@ -1631,6 +1697,27 @@ class CommerceAgent:
                 simulate_failure=simulate_failure,
             )
 
+        missing_context = self._missing_shopping_context(
+            message=message,
+            product_id=None if is_new_search else product_id,
+            button_action=button_action,
+            is_new_search=is_new_search,
+        )
+        if missing_context:
+            trace.append("SHOPPING_CONTEXT_REQUIRED")
+            return {
+                "message": self._shopping_context_message(missing_context),
+                "action": "CONTEXT_REQUIRED",
+                "final_action": "CONTEXT_REQUIRED",
+                "products": [],
+                "offer": None,
+                "transaction": None,
+                "customer_intent": {
+                    "missing_context": missing_context,
+                },
+                "agent_trace": trace,
+            }
+
         # ----------------------------------------------------
         # 1. CUSTOMER CONTEXT
         # ----------------------------------------------------
@@ -1639,14 +1726,11 @@ class CommerceAgent:
             "CUSTOMER_CONTEXT"
         )
 
+        progress("Customer Context", "processing", "Loading customer context")
         print("CustomerContext processing request...")
-        customer = (
-            self.customer_context.get_customer(
-                customer_id
-            )
-        )
         customer = self.customer_context.get_customer(customer_id)
         print(f"CustomerContext processed: customer_id={customer_id}, customer={customer}")
+        progress("Customer Context", "completed", "Customer context loaded")
 
         if customer is None:
             trace.append("ANONYMOUS_CUSTOMER")
@@ -1660,7 +1744,19 @@ class CommerceAgent:
             "BUYER_AGENT"
         )
 
+        progress("Buyer Agent", "processing", "Analyzing customer intent")
         print("BuyerAgent processing customer message...")
+        manual_negotiation_input = self._has_manual_negotiation_input(message)
+        negotiation_rounds_complete = (
+            transaction is not None
+            and session_product is not None
+            and transaction.product_id == session_product.product_id
+            and transaction.negotiation_round >= self._max_negotiation_rounds(
+                category_max_discount=self.policy_engine.get_max_discount(
+                    session_product.category_name
+                )
+            )
+        )
         reuse_session_context = (
             session_product is not None
             and not is_new_search
@@ -1673,6 +1769,10 @@ class CommerceAgent:
                 or self._is_product_reference(message)
                 or self._is_price_followup(message)
                 or button_action in {"negotiate", "negotiate_again"}
+            )
+            and not (
+                manual_negotiation_input
+                and negotiation_rounds_complete
             )
         )
         if reuse_session_context and session_intent is not None:
@@ -1724,6 +1824,7 @@ class CommerceAgent:
             intent.product_preferences = product_preferences
 
         print(f"BuyerAgent output: intent={intent.intent}, budget={intent.budget}, discount_requested={intent.discount_requested}, max_discount_requested={intent.max_discount_requested}")
+        progress("Buyer Agent", "completed", "Customer intent analyzed")
 
         if customer_id is not None:
             self.memory.set_intent(intent, customer_id)
@@ -1754,6 +1855,7 @@ class CommerceAgent:
             "PRODUCT_RETRIEVER"
         )
 
+        progress("Product Retriever", "processing", "Searching product options")
         print("ProductRetriever processing product options...")
         is_explicit_product_request = (
             product_id is not None
@@ -1815,10 +1917,13 @@ class CommerceAgent:
         )
 
         if (
-            referenced_product
-            or price_followup
-            or explicit_product_selection
-            or (selected_product is not None and locked_product_id is not None)
+            not is_new_search
+            and (
+                referenced_product
+                or price_followup
+                or explicit_product_selection
+                or (selected_product is not None and locked_product_id is not None)
+            )
         ):
             trace.append("AGENT_MEMORY")
             resolved_product = (
@@ -1843,6 +1948,7 @@ class CommerceAgent:
                     category=(
                         intent.product_category
                         if intent.product_category
+                        and self._has_explicit_category(message)
                         and intent.product_category.lower() not in {
                             "general",
                             "unspecified",
@@ -1864,6 +1970,8 @@ class CommerceAgent:
 
             if customer_id is not None:
                 self.memory.set_products(products, customer_id)
+
+        progress("Product Retriever", "completed", f"Found {len(products)} product options")
 
         # ----------------------------------------------------
         # NO PRODUCTS
@@ -1915,6 +2023,13 @@ class CommerceAgent:
         if requested_discount is not None and float(requested_discount) <= 0:
             requested_discount = None
         target_price = self._extract_target_price(message)
+        explicit_discount = self._extract_discount_request(
+            message,
+            top_product.current_price,
+        )
+        if requested_discount is None and explicit_discount is not None:
+            requested_discount = explicit_discount
+            intent.discount_requested = True
         if target_price is not None and target_price > top_product.current_price:
             intent.discount_requested = False
             trace.extend([
@@ -2037,6 +2152,7 @@ class CommerceAgent:
             "OPPORTUNITY_ENGINE"
         )
 
+        progress("Opportunity Engine", "processing", "Calculating purchase opportunity")
         print("OpportunityEngine processing purchase score and discount score...")
         intelligence = (
             self.opportunity_engine.calculate(
@@ -2059,6 +2175,7 @@ class CommerceAgent:
         )
 
         print(f"OpportunityEngine processed: purchase_score={purchase_score}, discount_score={discount_score}, top_product={top_product.product_id}")
+        progress("Opportunity Engine", "completed", "Opportunity scores calculated")
 
         if (
             selected_product is not None
@@ -2087,6 +2204,11 @@ class CommerceAgent:
         requested_discount_exceeds_ceiling = (
             requested_discount is not None
             and requested_discount > negotiation_max_discount
+        )
+        final_manual_offer = bool(
+            customer_supplied_discount
+            and active_product_transaction
+            and transaction.negotiation_round >= negotiation_rounds
         )
 
         if (
@@ -2150,6 +2272,7 @@ class CommerceAgent:
             "MERCHANT_DECISION_ENGINE"
         )
 
+        progress("Merchant Decision Engine", "processing", "Evaluating merchant offer")
         print("MerchantDecisionEngine deciding offer...")
         merchant_decision = (
             self.merchant_engine.decide(
@@ -2214,6 +2337,7 @@ class CommerceAgent:
             self.memory.set_merchant_decision(merchant_decision, customer_id)
 
         print(f"MerchantDecisionEngine decided: action={merchant_decision.merchant_action}, approved_discount_percent={merchant_decision.approved_discount_percent}, negotiation_allowed={merchant_decision.negotiation_allowed}")
+        progress("Merchant Decision Engine", "completed", "Merchant offer evaluated")
 
         # ----------------------------------------------------
         # 7. NEGOTIATION AGENT
@@ -2229,6 +2353,7 @@ class CommerceAgent:
             "NEGOTIATION_AGENT"
         )
 
+        progress("Negotiation Agent", "processing", "Calculating negotiation offer")
         print("NegotiationAgent negotiating discount...")
         negotiation = self.negotiation_agent.negotiate(
             requested_discount=(
@@ -2249,6 +2374,7 @@ class CommerceAgent:
             self.memory.set_negotiation_result(negotiation, customer_id)
 
         print(f"NegotiationAgent negotiated: requested_discount={negotiation.requested_discount}, offered_discount={negotiation.offered_discount}, counter_offer={negotiation.counter_offer}")
+        progress("Negotiation Agent", "completed", "Negotiation offer calculated")
 
         # ----------------------------------------------------
         # 8. DETERMINE WHETHER DISCOUNT ACTION IS NEEDED
@@ -2328,6 +2454,7 @@ class CommerceAgent:
             "POLICY_ENGINE"
         )
 
+        progress("Policy Engine", "processing", "Checking pricing policy")
         print("PolicyEngine applying policy rules...")
         requested_discount = negotiation.offered_discount
 
@@ -2396,6 +2523,7 @@ class CommerceAgent:
             self.memory.set_policy_result(policy_result, customer_id)
 
         print(f"PolicyEngine applied policy: allowed={policy_result.get('allowed')}, approved_discount_percent={policy_result.get('approved_discount_percent')}, final_price={policy_result.get('final_price')}")
+        progress("Policy Engine", "completed", "Pricing policy applied")
 
         # ----------------------------------------------------
         # 9. FINAL ACTION
@@ -2405,6 +2533,7 @@ class CommerceAgent:
             "FINAL_DECISION"
         )
 
+        progress("Commerce Decision", "processing", "Preparing final decision")
         print("Final decision being produced...")
         final_action = (
             self._commercial_action(
@@ -2478,6 +2607,7 @@ class CommerceAgent:
         # ----------------------------------------------------
 
         print(f"Final decision: {final_action}")
+        progress("Commerce Decision", "completed", f"Final decision: {final_action}")
 
         if final_action in {"OFFER_REQUESTED", "COUNTER_OFFER", "NEGOTIATE"}:
             return self._build_response(
@@ -2494,6 +2624,7 @@ class CommerceAgent:
                 trace=trace,
                 purchase_score=purchase_score,
                 discount_score=discount_score,
+                final_offer=final_manual_offer,
             )
 
         if final_action in {"RECOMMEND_PRODUCT", "NEGOTIATE"}:
@@ -2564,6 +2695,145 @@ class CommerceAgent:
             }
         )
 
+    @staticmethod
+    def _pending_context_message(session) -> Optional[str]:
+        if not session:
+            return None
+
+        messages = session.get("messages", [])
+        if not messages:
+            return None
+
+        assistant_indexes = [
+            index
+            for index, item in enumerate(messages)
+            if item.get("role") == "assistant"
+        ]
+        if not assistant_indexes:
+            return None
+
+        last_assistant_index = assistant_indexes[-1]
+        response = messages[last_assistant_index].get("data") or {}
+        if response.get("action") != "CONTEXT_REQUIRED":
+            return None
+
+        previous_completed_index = max(
+            (
+                index
+                for index in assistant_indexes[:-1]
+                if (messages[index].get("data") or {}).get("action")
+                != "CONTEXT_REQUIRED"
+            ),
+            default=-1,
+        )
+        pending_messages = messages[previous_completed_index + 1:]
+        user_messages = [
+            str(item.get("text", "")).strip()
+            for item in pending_messages
+            if item.get("role") == "user" and item.get("text")
+        ]
+        return " ".join(user_messages) or None
+
+    @staticmethod
+    def _has_explicit_budget(message: str) -> bool:
+        return bool(
+            re.search(
+                r"(?:under|below|less than|within|budget|upto|up to|between|around|price)"
+                r"\s*(?:inr|rs|₹)?\s*[0-9]",
+                message,
+                flags=re.IGNORECASE,
+            )
+            or re.search(r"[₹$]\s*[0-9]", message)
+        )
+
+    @staticmethod
+    def _has_explicit_urgency(message: str) -> bool:
+        return bool(
+            re.search(
+                r"\b(?:urgent|urgently|asap|immediately|today|tonight|this week|"
+                r"high priority|no rush|not urgent|whenever|low priority|"
+                r"low urgency|medium urgency|moderate urgency|low|medium|high)\b",
+                message,
+                flags=re.IGNORECASE,
+            )
+        )
+
+    def _merchant_category_options(self) -> List[str]:
+        policy = getattr(self.policy_engine, "policy", {}) or {}
+        overrides = (
+            policy.get("discount_policy", {})
+            .get("category_overrides_discount", {})
+        )
+        return [
+            f"Category {category_id}"
+            for category_id in sorted(overrides, key=str)
+        ]
+
+    @staticmethod
+    def _has_explicit_category(message: str) -> bool:
+        text = message.lower()
+        if re.search(r"\bcategory\s*[0-9]+\b", text):
+            return True
+
+        category_terms = (
+            "shoe", "sneaker", "phone", "smartphone", "mobile", "laptop",
+            "tablet", "headphone", "earphone", "watch", "bag", "clothing",
+            "apparel", "camera", "television", "tv", "electronics", "sports",
+            "furniture", "beauty", "home", "computer", "product category",
+        )
+        return any(term in text for term in category_terms)
+
+    def _missing_shopping_context(
+        self,
+        message: str,
+        product_id: Optional[int],
+        button_action: Optional[str],
+        is_new_search: bool = False,
+    ) -> List[str]:
+        if (
+            product_id is not None
+            or button_action is not None
+            or self._is_acceptance_message(message)
+            or self._is_product_reference(message)
+            or (self._extract_target_price(message) is not None and not is_new_search)
+            or (self._is_price_followup(message) and not is_new_search)
+        ):
+            return []
+
+        if self._has_explicit_budget(message):
+            return []
+
+        missing = []
+        if not self._has_explicit_category(message):
+            missing.append("category")
+        if not self._has_explicit_budget(message):
+            missing.append("budget")
+        if not self._has_explicit_urgency(message):
+            missing.append("urgency")
+        return missing
+
+    def _shopping_context_message(self, missing_context: List[str]) -> str:
+        labels = {
+            "category": "the product category",
+            "budget": "your minimum and maximum budget (or maximum price)",
+            "urgency": "how urgent the purchase is (low, medium, or high)",
+        }
+        requested = [labels[item] for item in missing_context]
+        category_options = ""
+        if "category" in missing_context:
+            category_options = (
+                " Available categories: "
+                + ", ".join(self._merchant_category_options())
+                + "."
+            )
+        if len(requested) == 1:
+            return f"Before I search, please tell me {requested[0]}.{category_options}"
+        return (
+            "Before I search, please tell me "
+            f"{', '.join(requested[:-1])}, and {requested[-1]}."
+            f"{category_options}"
+        )
+
     def _is_price_followup(self, message: str) -> bool:
         text = " ".join(message.lower().strip().split())
         if not text:
@@ -2590,7 +2860,26 @@ class CommerceAgent:
         )
 
     @staticmethod
+    def _has_manual_negotiation_input(message: str) -> bool:
+        return bool(
+            re.search(
+                r"%\s*(?:off|discount)?\b|\b(?:discount|off)\b|"
+                r"[₹$]\s*[0-9]|"
+                r"\b(?:pay|price|target|for|rupees?|inr|rs)\b\s*[:₹$]?\s*[0-9]",
+                message,
+                flags=re.IGNORECASE,
+            )
+        )
+
+    @staticmethod
     def _extract_target_price(message: str) -> Optional[float]:
+        if re.search(
+            r"\b(?:under|below|less than|within|budget|upto|up to|between)\b",
+            message,
+            flags=re.IGNORECASE,
+        ):
+            return None
+
         match = re.search(
             r"(?:price|pay|for|at|rupees?|inr|rs|₹)\s*(?:inr|rs|₹|rupees?)?\s*([0-9][0-9,]*)\b|\b([0-9][0-9,]*)\s*(?:rupees?|inr|rs)\b",
             message.lower(),
@@ -2600,6 +2889,31 @@ class CommerceAgent:
             return None
         value = match.group(1) or match.group(2)
         return float(value.replace(",", ""))
+
+    @staticmethod
+    def _extract_discount_request(
+        message: str,
+        product_price: float,
+    ) -> Optional[float]:
+        percentage_match = re.search(
+            r"\b(\d+(?:\.\d+)?)\s*%\s*(?:off|discount)?\b",
+            message,
+            flags=re.IGNORECASE,
+        )
+        if percentage_match:
+            return float(percentage_match.group(1))
+
+        amount_match = re.search(
+            r"\bdiscount\s*(?:of|is|:)?\s*(?:inr|rs|₹|rupees?)?\s*"
+            r"([0-9][0-9,]*)\b",
+            message,
+            flags=re.IGNORECASE,
+        )
+        if amount_match and product_price > 0:
+            discount_amount = float(amount_match.group(1).replace(",", ""))
+            return (discount_amount / float(product_price)) * 100.0
+
+        return None
 
     def _is_new_catalog_search(self, message: str) -> bool:
         text = " ".join(message.lower().strip().split())
@@ -2617,6 +2931,16 @@ class CommerceAgent:
                 "other products",
                 "different product",
             }
+        )
+
+    def _is_budget_only_catalog_search(self, message: str) -> bool:
+        """Treat a standalone budget request as a new search requiring category context."""
+        return (
+            self._has_explicit_budget(message)
+            and self._extract_target_price(message) is None
+            and not self._is_product_reference(message)
+            and not self._is_acceptance_message(message)
+            and not self._is_negotiation_message(message)
         )
 
     def _is_acceptance_message(self, message: str) -> bool:
@@ -3122,7 +3446,8 @@ class CommerceAgent:
         final_action,
         trace,
         purchase_score,
-        discount_score
+        discount_score,
+        final_offer=False,
     ) -> Dict[str, Any]:
 
         suggested_products = []
@@ -3247,6 +3572,8 @@ class CommerceAgent:
             "final_action": final_action,
 
             "action": final_action,
+
+            "final_offer": final_offer,
 
             "agent_trace": trace
         }

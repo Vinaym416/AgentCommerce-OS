@@ -68,11 +68,11 @@ Do not approve or promise discounts. Extract only information present in the cus
         budget = parsed.get("budget_max") or parsed.get("budget") or self._extract_budget(text)
         discount = self._extract_discount(text)
         result_limit = parsed.get("result_limit") or self._extract_result_limit(text)
-        urgency = parsed.get("urgency") or "medium"
+        urgency = parsed.get("urgency") or "low"
         if urgency == "normal":
-            urgency = "medium"
+            urgency = "low"
         if urgency not in {"low", "medium", "high"}:
-            urgency = "medium"
+            urgency = "low"
 
         confidence = parsed.get("confidence_score", parsed.get("confidence", 0.7))
         try:

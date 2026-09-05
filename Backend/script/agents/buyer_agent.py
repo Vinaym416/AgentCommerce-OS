@@ -180,7 +180,7 @@ Rules:
             "product_category": parsed.get("product_category") or "general",
             "discount_requested": bool(parsed.get("discount_requested")),
             "discount_value": parsed.get("discount_value") or parsed.get("max_discount_requested") or None,
-            "urgency": parsed.get("urgency") or "medium",
+            "urgency": parsed.get("urgency") or "low",
             "confidence_score": parsed.get("confidence_score") if parsed.get("confidence_score") is not None else parsed.get("confidence", 0.7),
             "product_preferences": parsed.get("product_preferences") or [],
             "constraints": parsed.get("constraints") or [],

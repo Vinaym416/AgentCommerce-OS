@@ -117,6 +117,36 @@ def process(
     )
 
 
+def test_missing_shopping_context_is_requested_before_buyer_agent():
+    agent = create_agent()
+
+    def buyer_agent_should_not_run(_message):
+        raise AssertionError("BuyerAgent must not run before context is complete")
+
+    agent.buyer_agent.extract_intent = buyer_agent_should_not_run
+
+    result = process(agent, "Find me running shoes")
+
+    assert result["action"] == "CONTEXT_REQUIRED"
+    assert result["customer_intent"]["missing_context"] == [
+        "budget",
+        "urgency",
+    ]
+
+
+def test_budget_and_urgency_are_detected_from_customer_message():
+    agent = create_agent()
+
+    assert CommerceAgent._has_explicit_budget("running shoes under ₹3000")
+    assert CommerceAgent._has_explicit_urgency("I need them urgently")
+    assert CommerceAgent._has_explicit_category("running shoes")
+    assert agent._missing_shopping_context(
+        "Find running shoes under ₹3000 urgently",
+        product_id=None,
+        button_action=None,
+    ) == []
+
+
 # ============================================================
 # 1. BASIC CUSTOMER-AWARE REQUEST
 # ============================================================
